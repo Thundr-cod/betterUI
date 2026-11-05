@@ -688,7 +688,8 @@ impl Panel {
             let btn = R::new(pad, *y, row_h, row_h);
             items.push(Item::Rect(btn, 6.0 * s, FAINT));
             let icon = self.gfx.text(glyph, &self.fonts.icon, row_h)?;
-            items.push(Item::Text(icon, btn.x + (btn.w - icon.width) / 2.0, *y, if muted { DIM } else { FG }));
+            let ix = btn.x + (btn.w - icon.width) / 2.0;
+            items.push(Item::Text(icon, ix, *y, if muted { DIM } else { FG }));
             if id == SliderId::Volume {
                 hits.push((btn, Hit::Mute));
             }
