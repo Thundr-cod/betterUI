@@ -2,7 +2,9 @@
 #![windows_subsystem = "windows"]
 
 mod appbar;
+mod backdrop;
 mod bar;
+mod config;
 mod log;
 mod render;
 mod sysinfo;
