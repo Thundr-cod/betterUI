@@ -86,6 +86,7 @@ struct Fonts {
     bold: IDWriteTextFormat,
     small: IDWriteTextFormat,
     icon: IDWriteTextFormat,
+    icon_small: IDWriteTextFormat,
 }
 
 struct Panel {
@@ -191,6 +192,7 @@ fn make_fonts(gfx: &Gfx, s: f32) -> Result<Fonts> {
         bold: gfx.text_format(TEXT_FONT, 14.0 * s, 600)?,
         small: gfx.text_format(TEXT_FONT, 12.0 * s, 400)?,
         icon: gfx.text_format(ICON_FONT, 16.0 * s, 400)?,
+        icon_small: gfx.text_format(ICON_FONT, 11.0 * s, 400)?,
     })
 }
 
@@ -621,7 +623,7 @@ impl Panel {
         let row = R::new(pad, y, inner, 34.0 * s);
         let t = self.gfx.text("Bluetooth settings", &self.fonts.text, row.h)?;
         items.push(Item::Text(t, row.x + 10.0 * s, row.y, FG));
-        let chev = self.gfx.text(ICON_CHEVRON, &self.fonts.small, row.h)?;
+        let chev = self.gfx.text(ICON_CHEVRON, &self.fonts.icon_small, row.h)?;
         let cx = row.x + row.w - 10.0 * s - chev.width;
         items.push(Item::Text(chev, cx, row.y, DIM));
         hits.push((row, Hit::Link("ms-settings:bluetooth")));
