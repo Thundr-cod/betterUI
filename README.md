@@ -18,7 +18,7 @@ with no web view, so it starts instantly and uses a few MB of RAM.
 
 Every push to `main` is built automatically. Download `betterui.exe` from the
 **Latest build** release on the Releases page and run it. No installer and no
-other software needed.
+other software needed. See the [Code signing policy](#code-signing-policy).
 
 ## Using it
 
@@ -45,3 +45,35 @@ Install Rust (https://rustup.rs) and the Visual Studio C++ Build Tools, then:
 ```
 cargo build --release
 ```
+
+## Code signing policy
+
+Windows releases of betterUI are signed through the SignPath Foundation
+open-source program:
+**Free code signing provided by [SignPath.io](https://about.signpath.io),
+certificate by [SignPath Foundation](https://signpath.org).**
+
+*Status: application pending. Until it is approved, builds are unsigned.*
+
+Only binaries built by this repository's GitHub Actions workflow from the
+source code in this repository are signed. Every signing request is approved
+by hand.
+
+Team roles:
+
+- **Committers and reviewers:** [Thundr-cod](https://github.com/Thundr-cod)
+- **Approvers:** [Thundr-cod](https://github.com/Thundr-cod)
+
+Changes from anyone outside the list above are reviewed before they are merged.
+
+## Privacy policy
+
+betterUI does not collect, store or send any personal data. It makes no
+network connections of its own: the network readout on the bar only reads
+your PC's local connection status. Settings and logs stay on your PC in
+`%APPDATA%\betterUI\`.
+
+## License
+
+betterUI is free software, licensed under the
+[GNU General Public License v3.0](LICENSE). Copyright (C) 2026 Thundr-cod.

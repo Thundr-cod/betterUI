@@ -3,6 +3,9 @@ name = "betterui"
 version = "0.1.0"
 edition = "2021"
 description = "A lightweight native desktop shell for Windows 11 (top bar + dock)"
+license = "GPL-3.0-only"
+repository = "https://github.com/Thundr-cod/betterUI"
+build = "build.rs"
 
 [dependencies.windows]
 version = "0.58"
@@ -28,6 +31,9 @@ features = [
     "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",
 ]
+
+[build-dependencies]
+winresource = "0.1"
 
 [profile.release]
 opt-level = 3

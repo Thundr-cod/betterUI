@@ -45,5 +45,8 @@ jobs:
           tag_name: latest
           name: Latest build
           prerelease: true
-          body: "Automatic build of the latest commit on main (${{ github.sha }})."
+          body: |
+            Automatic build of the latest commit on main (${{ github.sha }}).
+
+            Code signing policy: ${{ github.server_url }}/${{ github.repository }}#code-signing-policy
           files: target/release/betterui.exe
