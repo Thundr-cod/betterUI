@@ -50,3 +50,71 @@ jobs:
 
             Code signing policy: ${{ github.server_url }}/${{ github.repository }}#code-signing-policy
           files: target/release/betterui.exe
+
+  # Launch the built exe on a real Windows desktop, check that it keeps
+  # running, and take a screenshot. The screenshot and betterUI's log are
+  # pushed to the `ci-screenshots` branch so they can be reviewed without
+  # downloading anything.
+  smoke-test:
+    needs: build
+    runs-on: windows-latest
+    concurrency:
+      group: smoke-test
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: betterui
+
+      - name: Run betterUI and take a screenshot
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath .\betterui.exe -PassThru
+          Start-Sleep -Seconds 8
+
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$PWD\screenshot.png", [System.Drawing.Imaging.ImageFormat]::Png)
+
+          $alive = -not $proc.HasExited
+          $logPath = Join-Path $env:APPDATA 'betterUI\log.txt'
+          $log = if (Test-Path $logPath) { Get-Content $logPath -Raw } else { '(no log file)' }
+          $explorer = [bool](Get-Process explorer -ErrorAction SilentlyContinue)
+          @"
+          commit: $env:GITHUB_SHA
+          ref: $env:GITHUB_HEAD_REF$env:GITHUB_REF_NAME
+          screen: $($b.Width)x$($b.Height)
+          explorer running: $explorer
+          betterUI still running after 8s: $alive
+          exit code: $(if ($alive) { '-' } else { $proc.ExitCode })
+          --- log.txt ---
+          $log
+          "@ | Set-Content smoke.txt
+
+          if ($alive) { Stop-Process -Id $proc.Id -Force }
+          Get-Content smoke.txt
+          if (-not $alive) {
+            $enc = (Get-Content smoke.txt -Raw).Replace('%','%25').Replace("`r",'').Replace("`n",'%0A')
+            Write-Output "::error title=betterUI exited during smoke test::$enc"
+            exit 1
+          }
+
+      - name: Publish screenshot to ci-screenshots branch
+        if: always()
+        shell: pwsh
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if (-not (Test-Path screenshot.png)) { exit 0 }
+          New-Item -ItemType Directory shots | Out-Null
+          Copy-Item screenshot.png, smoke.txt shots\
+          Set-Location shots
+          git init -q -b ci-screenshots
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Smoke test screenshot for $env:GITHUB_SHA"
+          git push -q --force "https://x-access-token:$env:TOKEN@github.com/$env:GITHUB_REPOSITORY.git" ci-screenshots
