@@ -32,6 +32,10 @@ fn main() {
         return;
     }
 
+    if args.iter().any(|a| a == "--demo-audio") {
+        audio::enable_demo();
+    }
+
     // Only one copy may run at a time.
     let _mutex = unsafe { CreateMutexW(None, false, w!("Local\\betterUI.singleton")) };
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {

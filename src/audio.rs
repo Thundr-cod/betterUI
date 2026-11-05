@@ -123,6 +123,9 @@ impl Audio {
 
     /// All active devices for a direction, sorted by name.
     pub fn devices(&self, flow: Flow) -> Vec<Device> {
+        if demo() {
+            return demo_devices(flow);
+        }
         let default_id = self
             .default_device(flow)
             .and_then(|d| unsafe { d.GetId().ok().map(|p| take_pwstr(p)) });
@@ -150,6 +153,12 @@ impl Audio {
 
     /// Volume and mute state of the default device, if there is one.
     pub fn level(&self, flow: Flow) -> Option<Level> {
+        if demo() {
+            return Some(match flow {
+                Flow::Output => Level { volume: 0.62, muted: false },
+                Flow::Input => Level { volume: 0.80, muted: false },
+            });
+        }
         let ep = self.endpoint(flow)?;
         unsafe {
             Some(Level {
@@ -186,6 +195,9 @@ impl Audio {
 
     /// Apps with audio sessions on the default output device.
     pub fn apps(&mut self) -> Vec<App> {
+        if demo() {
+            return demo_apps();
+        }
         let mut apps = self.apps_inner().unwrap_or_default();
         apps.sort_by(|a, b| {
             let sa = a.name == SYSTEM_SOUNDS;
@@ -258,6 +270,38 @@ impl Audio {
 }
 
 pub const SYSTEM_SOUNDS: &str = "System sounds";
+
+/// Demo mode (`--demo-audio`): made-up devices and apps so the CI screenshot
+/// test can show the full flyout on machines without a sound card. Nothing
+/// is read from or written to real audio devices in this mode.
+static DEMO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn enable_demo() {
+    DEMO.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn demo() -> bool {
+    DEMO.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn demo_devices(flow: Flow) -> Vec<Device> {
+    let names: &[&str] = match flow {
+        Flow::Output => &["Headphones (Arctis Nova 7)", "Speakers (Realtek(R) Audio)", "LG ULTRAGEAR (NVIDIA High Definition Audio)"],
+        Flow::Input => &["Microphone (Arctis Nova 7)", "Microphone Array (Realtek(R) Audio)"],
+    };
+    names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| Device { id: format!("demo-{i}"), name: n.to_string(), is_default: i == 0 })
+        .collect()
+}
+
+fn demo_apps() -> Vec<App> {
+    [("Discord", 0.8, false), ("Google Chrome", 0.55, false), ("Spotify", 0.35, true), (SYSTEM_SOUNDS, 1.0, false)]
+        .iter()
+        .map(|(n, v, m)| App { name: n.to_string(), volume: *v, muted: *m, controls: Vec::new() })
+        .collect()
+}
 
 fn process_path(pid: u32) -> Option<String> {
     unsafe {

@@ -389,7 +389,13 @@ impl Bar {
     }
 
     fn open_audio(&mut self, tab: Option<Tab>) {
-        let b = self.audio_btn;
+        let mut b = self.audio_btn;
+        if b.w <= 0.0 {
+            // Not drawn yet (only possible right after start-up): use the
+            // right end of the bar, where the button will be.
+            let s = self.scale();
+            b = R::new(self.width as f32 - 50.0 * s, 0.0, 44.0 * s, self.height as f32);
+        }
         let anchor = RECT {
             left: self.origin.0 + b.x as i32,
             top: self.origin.1 + b.y as i32,
