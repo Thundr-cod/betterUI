@@ -84,7 +84,8 @@ pub fn round_corners(hwnd: HWND, w: i32, h: i32, radius: i32) {
     unsafe {
         let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, radius * 2, radius * 2);
         // The window owns the region after this call; don't delete it.
-        SetWindowRgn(hwnd, rgn, true);
+        let ok = SetWindowRgn(hwnd, rgn, true);
+        crate::log::write(&format!("round_corners {w}x{h} r={radius} rgn_null={} result={ok}", rgn.is_invalid()));
     }
 }
 
