@@ -2,13 +2,17 @@
 #![windows_subsystem = "windows"]
 
 mod appbar;
+mod audio;
+mod audio_flyout;
 mod backdrop;
 mod bar;
 mod config;
 mod log;
+mod policy;
 mod render;
 mod sysinfo;
 mod taskbar;
+mod ui;
 
 use windows::core::w;
 use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
