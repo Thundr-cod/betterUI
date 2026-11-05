@@ -11,7 +11,6 @@ use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTAT
 pub struct Memory {
     pub used_gb: f64,
     pub total_gb: f64,
-    pub percent: u32,
 }
 
 pub fn memory() -> Memory {
@@ -28,7 +27,6 @@ pub fn memory() -> Memory {
     Memory {
         used_gb: used / GB,
         total_gb: total / GB,
-        percent: m.dwMemoryLoad,
     }
 }
 
