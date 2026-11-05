@@ -138,6 +138,7 @@ fn create_inner(config: &Config, forced: bool) -> Result<()> {
             cyBottomHeight: -1,
         };
         let _ = windows::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea(hwnd, &margins);
+        popup::round_corners(hwnd);
         crate::backdrop::set_blur(hwnd, config.bar_blur);
 
         let gfx = Gfx::new()?;
@@ -336,7 +337,6 @@ impl Dock {
         let mw = self.monitor.right - self.monitor.left;
         self.base_x = self.monitor.left + (mw - self.width) / 2;
         self.base_y = self.monitor.bottom - self.height - (MARGIN * s).round() as i32;
-        popup::round_corners(self.hwnd, self.width, self.height, (16.0 * s).round() as i32);
         self.gfx.resize(self.width as u32, self.height as u32);
         self.apply_offset();
         self.invalidate();

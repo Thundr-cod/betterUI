@@ -280,7 +280,6 @@ impl Flyout {
             let y = work.top.max(anchor.bottom) + gap;
 
             let _ = SetWindowPos(self.hwnd, HWND_TOPMOST, x, y, self.width, self.height, SWP_NOACTIVATE);
-            crate::popup::round_corners(self.hwnd, self.width, self.height, (8.0 * s).round() as i32);
             self.gfx.resize(self.width as u32, self.height as u32);
             let _ = ShowWindow(self.hwnd, SW_SHOW);
             let _ = SetForegroundWindow(self.hwnd);
@@ -314,7 +313,6 @@ impl Flyout {
                     SWP_NOACTIVATE | windows::Win32::UI::WindowsAndMessaging::SWP_NOMOVE,
                 );
             }
-            crate::popup::round_corners(self.hwnd, self.width, self.height, (8.0 * self.scale()).round() as i32);
             self.gfx.resize(self.width as u32, self.height as u32);
         }
     }
