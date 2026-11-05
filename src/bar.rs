@@ -4,6 +4,8 @@
 // Centre: date and time
 // Right:  Bluetooth, control center, audio (later: system tray)
 //
+// The dock (dock.rs) is a separate window started alongside the bar.
+//
 // The bar only repaints when something it shows has changed (at most once a
 // second), so it uses almost no CPU while idle.
 
@@ -145,6 +147,8 @@ pub fn run() -> Result<()> {
         let _ = ShowWindow(hwnd, SW_SHOWNA);
         SetTimer(hwnd, TIMER_TICK, 1000, None);
         SetTimer(hwnd, TIMER_TASKBAR, 300, None);
+
+        crate::dock::create(std::env::args().any(|a| a == "--test-open=dock"));
 
         // `--test-open=audio-devices` / `--test-open=audio-mixer`
         for arg in std::env::args() {
@@ -506,13 +510,13 @@ impl Bar {
             if cmd == MENU_QUIT {
                 let _ = PostMessageW(self.hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
             } else if cmd == MENU_BLUR {
-                self.config.bar_blur = !self.config.bar_blur;
+                let blur = !self.config.bar_blur;
+                self.config = Config::update(|c| c.bar_blur = blur);
                 backdrop::set_blur(self.hwnd, self.config.bar_blur);
-                self.config.save();
                 let _ = InvalidateRect(self.hwnd, None, false);
             } else if cmd > MENU_OPACITY_BASE && cmd <= MENU_OPACITY_BASE + 100 {
-                self.config.bar_opacity = (cmd - MENU_OPACITY_BASE) as u32;
-                self.config.save();
+                let pct = (cmd - MENU_OPACITY_BASE) as u32;
+                self.config = Config::update(|c| c.bar_opacity = pct);
                 let _ = InvalidateRect(self.hwnd, None, false);
             }
         }

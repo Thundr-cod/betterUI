@@ -11,7 +11,7 @@ with no web view, so it starts instantly and uses a few MB of RAM.
 | 1 | Top bar, taskbar replacement, RAM + network readout, clock | done |
 | 2 | Audio flyout: devices (output / input) + per-app mixer | done |
 | 3 | Bluetooth + control center (Wi-Fi, Bluetooth, brightness, volume) | done |
-| 4 | Dock (auto-hides; also hides when a window covers it) | planned |
+| 4 | Dock (auto-hides; also hides when a window covers it) | done |
 | 5 | System tray dropdown | planned |
 
 ## Getting it
@@ -30,7 +30,7 @@ are pre-releases; `v0.1.0` marks the finished MVP.
 | --- | --- |
 | v0.0.1 | Top bar, taskbar replacement, opacity/blur, audio flyout |
 | v0.0.2 | Bluetooth dropdown + control center |
-| v0.0.3 | Dock (planned) |
+| v0.0.3 | Dock |
 | v0.1.0 | System tray dropdown — MVP complete (planned) | See the [Code signing policy](#code-signing-policy).
 
 ## Using it
@@ -46,6 +46,10 @@ are pre-releases; `v0.1.0` marks the finished MVP.
   ```
 
   This restores your original taskbar settings, including auto-hide.
+- **Dock:** click an app to open or focus it (click again to minimize),
+  middle-click for a new window, right-click to pin/unpin, close, or change
+  when the dock hides. It starts with your taskbar pins; the list lives in
+  `%APPDATA%\betterUI\dock_pins.txt`.
 - Logs: `%APPDATA%\betterUI\log.txt`
 
 Don't run betterUI at the same time as Seelen UI. Both replace the taskbar and

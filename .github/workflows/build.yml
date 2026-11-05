@@ -103,6 +103,7 @@ jobs:
             'audio-mixer.png'      = '--test-open=audio-mixer --demo-audio'
             'bluetooth.png'        = '--test-open=bluetooth --demo'
             'control-center.png'   = '--test-open=control-center --demo'
+            'dock.png'             = '--test-open=dock'
           }
           $report = @()
           $failed = $false
