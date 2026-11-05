@@ -23,6 +23,8 @@ other software needed.
 ## Using it
 
 - **Quit:** right-click the bar → *Quit betterUI*. The Windows taskbar comes back.
+- **Look:** right-click the bar → *Bar opacity* (20–100%) and *Blur behind bar*.
+  Settings are saved in `%APPDATA%\betterUI\config.ini`.
 - **If the taskbar is ever stuck hidden** (for example betterUI was killed from
   Task Manager), run this in a terminal from the folder with the exe:
 

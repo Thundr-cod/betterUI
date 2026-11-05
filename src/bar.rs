@@ -12,9 +12,8 @@ use std::cell::RefCell;
 use windows::core::{w, Error, Result};
 use windows::Win32::Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, TRUE, WPARAM};
 use windows::Win32::Graphics::Dwm::{
-    DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMSBT_TRANSIENTWINDOW,
-    DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE,
-    DWMWCP_DONOTROUND,
+    DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE,
+    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
 };
 use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
 use windows::Win32::Graphics::Gdi::{
@@ -29,7 +28,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
     GetCursorPos, GetMessageW, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassW,
     RegisterWindowMessageW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
-    TrackPopupMenu, TranslateMessage, HWND_TOPMOST, IDC_ARROW, MF_STRING, MSG, SWP_NOACTIVATE,
+    TrackPopupMenu, TranslateMessage, HWND_TOPMOST, IDC_ARROW, MF_CHECKED, MF_POPUP,
+    MF_SEPARATOR, MF_STRING, MF_UNCHECKED, MSG, SWP_NOACTIVATE,
     SW_HIDE, SW_SHOWNA, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_ACTIVATE, WM_APP,
     WM_CLOSE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION, WM_ERASEBKGND,
     WM_MOUSEACTIVATE, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WM_WINDOWPOSCHANGED, WNDCLASSW,
@@ -37,13 +37,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::appbar::{self, ABN_FULLSCREENAPP, ABN_POSCHANGED};
+use crate::backdrop;
+use crate::config::Config;
 use crate::render::{Color, Gfx, Text, ICON_FONT, TEXT_FONT};
 use crate::sysinfo::{self, Memory, Network};
 use crate::{log, taskbar};
 
 // ---- Look -----------------------------------------------------------------
 const BAR_HEIGHT: f32 = 32.0; // logical pixels (scaled by DPI)
-const BG: Color = Color(0.06, 0.06, 0.08, 0.55);
+const BG_RGB: (f32, f32, f32) = (0.06, 0.06, 0.08);
 const PILL: Color = Color(1.0, 1.0, 1.0, 0.07);
 const FG: Color = Color(1.0, 1.0, 1.0, 0.92);
 const DIM: Color = Color(1.0, 1.0, 1.0, 0.55);
@@ -57,6 +59,9 @@ const WM_APPBAR: u32 = WM_APP + 1;
 const TIMER_TICK: usize = 1; // 1 s: clock + system info
 const TIMER_TASKBAR: usize = 2; // keep the native taskbar hidden
 const MENU_QUIT: usize = 1;
+const MENU_BLUR: usize = 2;
+const MENU_OPACITY_BASE: usize = 1000; // 1000 + percent
+const OPACITY_CHOICES: [u32; 9] = [100, 90, 80, 70, 60, 50, 40, 30, 20];
 const MA_NOACTIVATE: isize = 3;
 
 thread_local! {
@@ -71,6 +76,7 @@ struct Formats {
 
 struct Bar {
     hwnd: HWND,
+    config: Config,
     gfx: Gfx,
     fonts: Formats,
     dpi: u32,
@@ -114,6 +120,7 @@ pub fn run() -> Result<()> {
         style_window(hwnd);
 
         let mut bar = Bar::new(hwnd)?;
+        backdrop::set_blur(hwnd, bar.config.bar_blur);
         taskbar::hide();
         appbar::register(hwnd, WM_APPBAR);
         bar.reposition();
@@ -132,7 +139,8 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-/// Dark mode, acrylic backdrop, square corners.
+/// Dark mode, square corners, and per-pixel transparency (the blur itself
+/// is set up in backdrop.rs).
 fn style_window(hwnd: HWND) {
     unsafe {
         let dark: BOOL = TRUE;
@@ -141,13 +149,6 @@ fn style_window(hwnd: HWND) {
             DWMWA_USE_IMMERSIVE_DARK_MODE,
             &dark as *const _ as *const _,
             std::mem::size_of::<BOOL>() as u32,
-        );
-        let backdrop = DWMSBT_TRANSIENTWINDOW;
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_SYSTEMBACKDROP_TYPE,
-            &backdrop as *const _ as *const _,
-            std::mem::size_of_val(&backdrop) as u32,
         );
         let corners = DWMWCP_DONOTROUND;
         let _ = DwmSetWindowAttribute(
@@ -199,6 +200,7 @@ impl Bar {
         let fonts = make_formats(&gfx, 1.0)?;
         Ok(Self {
             hwnd,
+            config: Config::load(),
             gfx,
             fonts,
             dpi: 96,
@@ -346,6 +348,17 @@ impl Bar {
     fn context_menu(&mut self) {
         unsafe {
             let Ok(menu) = CreatePopupMenu() else { return };
+            if let Ok(sub) = CreatePopupMenu() {
+                for pct in OPACITY_CHOICES {
+                    let check = if pct == self.config.bar_opacity { MF_CHECKED } else { MF_UNCHECKED };
+                    let label = windows::core::HSTRING::from(format!("{pct}%"));
+                    let _ = AppendMenuW(sub, MF_STRING | check, MENU_OPACITY_BASE + pct as usize, &label);
+                }
+                let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, w!("Bar opacity"));
+            }
+            let blur_check = if self.config.bar_blur { MF_CHECKED } else { MF_UNCHECKED };
+            let _ = AppendMenuW(menu, MF_STRING | blur_check, MENU_BLUR, w!("Blur behind bar"));
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());
             let _ = AppendMenuW(menu, MF_STRING, MENU_QUIT, w!("Quit betterUI (restores taskbar)"));
             let mut pt = POINT::default();
             let _ = GetCursorPos(&mut pt);
@@ -359,9 +372,19 @@ impl Bar {
                 self.hwnd,
                 None,
             );
-            let _ = DestroyMenu(menu);
-            if cmd.0 as usize == MENU_QUIT {
+            let _ = DestroyMenu(menu); // also destroys the submenu
+            let cmd = cmd.0 as usize;
+            if cmd == MENU_QUIT {
                 let _ = PostMessageW(self.hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+            } else if cmd == MENU_BLUR {
+                self.config.bar_blur = !self.config.bar_blur;
+                backdrop::set_blur(self.hwnd, self.config.bar_blur);
+                self.config.save();
+                let _ = InvalidateRect(self.hwnd, None, false);
+            } else if cmd > MENU_OPACITY_BASE && cmd <= MENU_OPACITY_BASE + 100 {
+                self.config.bar_opacity = (cmd - MENU_OPACITY_BASE) as u32;
+                self.config.save();
+                let _ = InvalidateRect(self.hwnd, None, false);
             }
         }
     }
@@ -393,7 +416,8 @@ impl Bar {
         let clock = self.gfx.text(&self.clock, &self.fonts.bold, pill_h)?;
 
         let frame = self.gfx.begin(self.hwnd, self.width as u32, self.height as u32)?;
-        frame.round_rect(0.0, 0.0, w, h, 0.0, BG);
+        let bg = Color(BG_RGB.0, BG_RGB.1, BG_RGB.2, self.config.bar_opacity as f32 / 100.0);
+        frame.round_rect(0.0, 0.0, w, h, 0.0, bg);
 
         let pad = 10.0 * s;
         let gap = 6.0 * s;
