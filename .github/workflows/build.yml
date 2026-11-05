@@ -66,20 +66,37 @@ jobs:
         with:
           name: betterui
 
-      - name: Run betterUI and take a screenshot
+      - name: Run betterUI and take screenshots
         shell: pwsh
         run: |
-          $proc = Start-Process -FilePath .\betterui.exe -PassThru
-          Start-Sleep -Seconds 8
-
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
           $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
-          $g = [System.Drawing.Graphics]::FromImage($bmp)
-          $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
-          $bmp.Save("$PWD\screenshot.png", [System.Drawing.Imaging.ImageFormat]::Png)
+          function Shot($file) {
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save("$PWD\$file", [System.Drawing.Imaging.ImageFormat]::Png)
+            $g.Dispose(); $bmp.Dispose()
+          }
 
-          $alive = -not $proc.HasExited
+          # name of screenshot => command-line argument
+          $runs = [ordered]@{
+            'screenshot.png'       = $null
+            'audio-devices.png'    = '--test-open=audio-devices --demo-audio'
+            'audio-mixer.png'      = '--test-open=audio-mixer --demo-audio'
+          }
+          $report = @()
+          $failed = $false
+          foreach ($file in $runs.Keys) {
+            $arg = $runs[$file]
+            $proc = if ($arg) { Start-Process .\betterui.exe -ArgumentList $arg -PassThru } else { Start-Process .\betterui.exe -PassThru }
+            Start-Sleep -Seconds 7
+            Shot $file
+            $alive = -not $proc.HasExited
+            $report += "$file : still running after 7s = $alive" + $(if (-not $alive) { " (exit code $($proc.ExitCode))" } else { "" })
+            if ($alive) { Stop-Process -Id $proc.Id -Force; Start-Sleep -Seconds 1 } else { $failed = $true }
+          }
+
           $logPath = Join-Path $env:APPDATA 'betterUI\log.txt'
           $log = if (Test-Path $logPath) { Get-Content $logPath -Raw } else { '(no log file)' }
           $explorer = [bool](Get-Process explorer -ErrorAction SilentlyContinue)
@@ -88,15 +105,13 @@ jobs:
           ref: $env:GITHUB_HEAD_REF$env:GITHUB_REF_NAME
           screen: $($b.Width)x$($b.Height)
           explorer running: $explorer
-          betterUI still running after 8s: $alive
-          exit code: $(if ($alive) { '-' } else { $proc.ExitCode })
+          $($report -join "`n")
           --- log.txt ---
           $log
           "@ | Set-Content smoke.txt
 
-          if ($alive) { Stop-Process -Id $proc.Id -Force }
           Get-Content smoke.txt
-          if (-not $alive) {
+          if ($failed) {
             $enc = (Get-Content smoke.txt -Raw).Replace('%','%25').Replace("`r",'').Replace("`n",'%0A')
             Write-Output "::error title=betterUI exited during smoke test::$enc"
             exit 1
@@ -110,7 +125,7 @@ jobs:
         run: |
           if (-not (Test-Path screenshot.png)) { exit 0 }
           New-Item -ItemType Directory shots | Out-Null
-          Copy-Item screenshot.png, smoke.txt shots\
+          Copy-Item *.png, smoke.txt shots\
           Set-Location shots
           git init -q -b ci-screenshots
           git config user.name "github-actions[bot]"

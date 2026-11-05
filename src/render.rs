@@ -12,13 +12,14 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT,
     D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_NONE,
     D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
-    D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT,
+    D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT, D2D1_ELLIPSE,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
-    DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP,
+    DWRITE_TEXT_METRICS, DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+    DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 
@@ -87,6 +88,30 @@ impl Gfx {
             let mut m = DWRITE_TEXT_METRICS::default();
             layout.GetMetrics(&mut m)?;
             Ok(Text { layout, width: m.widthIncludingTrailingWhitespace })
+        }
+    }
+
+    /// Like `text`, but cut off with "…" if wider than `max_width`.
+    pub fn text_fit(
+        &self,
+        s: &str,
+        format: &IDWriteTextFormat,
+        max_width: f32,
+        height: f32,
+    ) -> Result<Text> {
+        let wide: Vec<u16> = s.encode_utf16().collect();
+        unsafe {
+            let layout = self.dwrite.CreateTextLayout(&wide, format, max_width.max(1.0), height)?;
+            let sign = self.dwrite.CreateEllipsisTrimmingSign(format)?;
+            let trimming = DWRITE_TRIMMING {
+                granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                delimiter: 0,
+                delimiterCount: 0,
+            };
+            layout.SetTrimming(&trimming, &sign)?;
+            let mut m = DWRITE_TEXT_METRICS::default();
+            layout.GetMetrics(&mut m)?;
+            Ok(Text { layout, width: m.widthIncludingTrailingWhitespace.min(max_width) })
         }
     }
 
@@ -161,6 +186,18 @@ impl Frame {
         unsafe {
             self.brush.SetColor(&color.d2d());
             self.target.FillRoundedRectangle(&rr, &self.brush);
+        }
+    }
+
+    pub fn circle(&self, cx: f32, cy: f32, radius: f32, color: Color) {
+        let e = D2D1_ELLIPSE {
+            point: D2D_POINT_2F { x: cx, y: cy },
+            radiusX: radius,
+            radiusY: radius,
+        };
+        unsafe {
+            self.brush.SetColor(&color.d2d());
+            self.target.FillEllipse(&e, &self.brush);
         }
     }
 

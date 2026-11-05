@@ -7,6 +7,10 @@ license = "GPL-3.0-only"
 repository = "https://github.com/Thundr-cod/betterUI"
 build = "build.rs"
 
+[dependencies]
+# Needed by the #[interface] macro used for IPolicyConfig.
+windows-core = "0.58"
+
 [dependencies.windows]
 version = "0.58"
 features = [
@@ -28,6 +32,15 @@ features = [
     "Win32_System_SystemInformation",
     "Win32_System_Com",
     "Win32_NetworkManagement_IpHelper",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Registry",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",
 ]

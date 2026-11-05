@@ -2,7 +2,7 @@
 //
 // Left:   RAM usage, network connection
 // Centre: date and time
-// Right:  (parts 2, 3 and 5) system tray, Bluetooth, control center, audio
+// Right:  audio (part 2); later system tray, Bluetooth, control center
 //
 // The bar only repaints when something it shows has changed (at most once a
 // second), so it uses almost no CPU while idle.
@@ -10,14 +10,15 @@
 use std::cell::RefCell;
 
 use windows::core::{w, Error, Result};
-use windows::Win32::Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, TRUE, WPARAM};
+use windows::Win32::Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE,
     DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
 };
 use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, GetMonitorInfoW, InvalidateRect, MonitorFromPoint, MONITORINFO,
+    BeginPaint, EndPaint, GetMonitorInfoW, InvalidateRect, MonitorFromPoint, ScreenToClient,
+    MONITORINFO,
     MONITOR_DEFAULTTOPRIMARY, PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -32,11 +33,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
     MF_SEPARATOR, MF_STRING, MF_UNCHECKED, MSG, SWP_NOACTIVATE,
     SW_HIDE, SW_SHOWNA, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_ACTIVATE, WM_APP,
     WM_CLOSE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION, WM_ERASEBKGND,
-    WM_MOUSEACTIVATE, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WM_WINDOWPOSCHANGED, WNDCLASSW,
+    WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_TIMER,
+    WM_WINDOWPOSCHANGED, WNDCLASSW,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::appbar::{self, ABN_FULLSCREENAPP, ABN_POSCHANGED};
+use crate::audio::{Audio, Flow, Level};
+use crate::audio_flyout::{self, Tab, WM_AUDIO_CHANGED};
+use crate::ui::{self, R};
 use crate::backdrop;
 use crate::config::Config;
 use crate::render::{Color, Gfx, Text, ICON_FONT, TEXT_FONT};
@@ -63,6 +68,8 @@ const MENU_BLUR: usize = 2;
 const MENU_OPACITY_BASE: usize = 1000; // 1000 + percent
 const OPACITY_CHOICES: [u32; 9] = [100, 90, 80, 70, 60, 50, 40, 30, 20];
 const MA_NOACTIVATE: isize = 3;
+// Used by the CI screenshot test: open a flyout right after start-up.
+const WM_TEST_OPEN: u32 = WM_APP + 3;
 
 thread_local! {
     static BAR: RefCell<Option<Bar>> = const { RefCell::new(None) };
@@ -87,6 +94,10 @@ struct Bar {
     memory: Memory,
     network: Network,
     clock: String,
+    audio: Option<Audio>,
+    volume: Option<Level>,
+    audio_btn: R,
+    origin: (i32, i32),
 }
 
 pub fn run() -> Result<()> {
@@ -129,6 +140,18 @@ pub fn run() -> Result<()> {
         let _ = ShowWindow(hwnd, SW_SHOWNA);
         SetTimer(hwnd, TIMER_TICK, 1000, None);
         SetTimer(hwnd, TIMER_TASKBAR, 300, None);
+
+        // `--test-open=audio-devices` / `--test-open=audio-mixer`
+        for arg in std::env::args() {
+            let tab = match arg.as_str() {
+                "--test-open=audio-devices" => Some(0),
+                "--test-open=audio-mixer" => Some(1),
+                _ => None,
+            };
+            if let Some(t) = tab {
+                let _ = PostMessageW(hwnd, WM_TEST_OPEN, WPARAM(t), LPARAM(0));
+            }
+        }
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
@@ -198,6 +221,10 @@ impl Bar {
     fn new(hwnd: HWND) -> Result<Self> {
         let gfx = Gfx::new()?;
         let fonts = make_formats(&gfx, 1.0)?;
+        let audio = Audio::new()
+            .map_err(|e| log::write(&format!("audio unavailable: {e:?}")))
+            .ok();
+        let volume = audio.as_ref().and_then(|a| a.level(Flow::Output));
         Ok(Self {
             hwnd,
             config: Config::load(),
@@ -211,6 +238,10 @@ impl Bar {
             memory: sysinfo::memory(),
             network: sysinfo::network(),
             clock: clock_text(),
+            audio,
+            volume,
+            audio_btn: R::default(),
+            origin: (0, 0),
         })
     }
 
@@ -268,6 +299,40 @@ impl Bar {
                 self.context_menu();
                 Some(LRESULT(0))
             }
+            WM_LBUTTONUP => {
+                let x = (lp.0 & 0xFFFF) as u16 as i16 as f32;
+                let y = ((lp.0 >> 16) & 0xFFFF) as u16 as i16 as f32;
+                if self.audio_btn.contains(x, y) {
+                    self.open_audio(None);
+                }
+                Some(LRESULT(0))
+            }
+            WM_MOUSEWHEEL => {
+                // Scroll on the speaker button to change the volume.
+                let mut pt = POINT {
+                    x: (lp.0 & 0xFFFF) as u16 as i16 as i32,
+                    y: ((lp.0 >> 16) & 0xFFFF) as u16 as i16 as i32,
+                };
+                unsafe {
+                    let _ = ScreenToClient(self.hwnd, &mut pt);
+                }
+                if self.audio_btn.contains(pt.x as f32, pt.y as f32) {
+                    let notches = ((wp.0 >> 16) & 0xFFFF) as u16 as i16 as f32 / 120.0;
+                    if let (Some(audio), Some(level)) = (&self.audio, self.volume) {
+                        audio.set_volume(Flow::Output, level.volume + notches * 0.02);
+                    }
+                    self.update_volume(true);
+                }
+                Some(LRESULT(0))
+            }
+            WM_AUDIO_CHANGED => {
+                self.update_volume(true);
+                Some(LRESULT(0))
+            }
+            WM_TEST_OPEN => {
+                self.open_audio(Some(if wp.0 == 1 { Tab::Mixer } else { Tab::Devices }));
+                Some(LRESULT(0))
+            }
             m if m != 0 && m == self.taskbar_created => {
                 // Explorer restarted: it re-created the taskbar and forgot us.
                 taskbar::hide();
@@ -300,11 +365,44 @@ impl Bar {
                 changed = true;
             }
         }
+        changed |= self.update_volume(false);
         if changed {
             unsafe {
                 let _ = InvalidateRect(self.hwnd, None, false);
             }
         }
+    }
+
+    /// Re-read the output volume. Returns true if the icon needs redrawing
+    /// (and redraws right away when `redraw` is set).
+    fn update_volume(&mut self, redraw: bool) -> bool {
+        let level = self.audio.as_ref().and_then(|a| a.level(Flow::Output));
+        let glyph_of = |l: Option<Level>| l.map(|l| ui::volume_glyph(l.volume, l.muted));
+        let changed = glyph_of(level) != glyph_of(self.volume);
+        self.volume = level;
+        if changed && redraw {
+            unsafe {
+                let _ = InvalidateRect(self.hwnd, None, false);
+            }
+        }
+        changed
+    }
+
+    fn open_audio(&mut self, tab: Option<Tab>) {
+        let mut b = self.audio_btn;
+        if b.w <= 0.0 {
+            // Not drawn yet (only possible right after start-up): use the
+            // right end of the bar, where the button will be.
+            let s = self.scale();
+            b = R::new(self.width as f32 - 50.0 * s, 0.0, 44.0 * s, self.height as f32);
+        }
+        let anchor = RECT {
+            left: self.origin.0 + b.x as i32,
+            top: self.origin.1 + b.y as i32,
+            right: self.origin.0 + (b.x + b.w) as i32,
+            bottom: self.origin.1 + self.height,
+        };
+        audio_flyout::toggle(anchor, self.hwnd, self.config.bar_opacity, tab);
     }
 
     /// Size and place the bar across the top of the primary monitor.
@@ -329,6 +427,7 @@ impl Bar {
 
             let height = (BAR_HEIGHT * self.scale()).round() as i32;
             let rc = appbar::reserve_top(self.hwnd, mi.rcMonitor, height);
+            self.origin = (rc.left, rc.top);
             self.width = rc.right - rc.left;
             self.height = rc.bottom - rc.top;
             let _ = SetWindowPos(
@@ -414,6 +513,11 @@ impl Bar {
         let net_icon = self.gfx.text(net_icon, &self.fonts.icon, pill_h)?;
         let net_label = self.gfx.text(net_label, &self.fonts.text, pill_h)?;
         let clock = self.gfx.text(&self.clock, &self.fonts.bold, pill_h)?;
+        let speaker = match self.volume {
+            Some(l) => ui::volume_glyph(l.volume, l.muted),
+            None => ui::ICON_MUTE,
+        };
+        let speaker = self.gfx.text(speaker, &self.fonts.icon, pill_h)?;
 
         let frame = self.gfx.begin(self.hwnd, self.width as u32, self.height as u32)?;
         let bg = Color(BG_RGB.0, BG_RGB.1, BG_RGB.2, self.config.bar_opacity as f32 / 100.0);
@@ -443,7 +547,16 @@ impl Bar {
         // Centre
         frame.text(&clock, ((w - clock.width) / 2.0).round(), pill_y, FG);
 
-        self.gfx.end(frame)
+        // Right side
+        let speaker_w = speaker.width + 2.0 * pad;
+        let speaker_x = w - 6.0 * s - speaker_w;
+        let speaker_color = if self.volume.is_some() { FG } else { DIM };
+        pill(speaker_x, &[(&speaker, speaker_color)]);
+        let audio_btn = R::new(speaker_x, 0.0, speaker_w, h);
+
+        let result = self.gfx.end(frame);
+        self.audio_btn = audio_btn;
+        result
     }
 }
 
