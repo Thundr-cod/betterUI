@@ -7,6 +7,7 @@ description = "A lightweight native desktop shell for Windows 11 (top bar + dock
 [dependencies.windows]
 version = "0.58"
 features = [
+    "Foundation_Numerics",
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Graphics_Gdi",
