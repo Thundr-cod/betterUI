@@ -1,0 +1,49 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cargo build --release --message-format=short 2>&1 | Tee-Object -FilePath build.log
+          $code = $LASTEXITCODE
+          # Put the whole compiler output in one annotation so it can be read
+          # from the run summary (and by the API) without downloading logs.
+          $log = (Get-Content build.log -Raw)
+          if ($null -eq $log) { $log = "" }
+          if ($log.Length -gt 60000) { $log = $log.Substring(0, 60000) }
+          $enc = $log.Replace('%','%25').Replace("`r",'').Replace("`n",'%0A')
+          if ($code -ne 0) {
+            Write-Output "::error title=cargo build failed::$enc"
+            exit 1
+          } elseif ($log -match 'warning') {
+            Write-Output "::warning title=cargo build warnings::$enc"
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: betterui
+          path: target/release/betterui.exe
+
+      - name: Publish as "Latest build" release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          prerelease: true
+          body: "Automatic build of the latest commit on main (${{ github.sha }})."
+          files: target/release/betterui.exe
