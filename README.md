@@ -8,17 +8,30 @@ with no web view, so it starts instantly and uses a few MB of RAM.
 
 | Part | What | State |
 | --- | --- | --- |
-| 1 | Top bar, taskbar replacement, RAM + network readout, clock | in progress |
-| 2 | Audio flyout: devices (output / input) + per-app mixer | planned |
+| 1 | Top bar, taskbar replacement, RAM + network readout, clock | done |
+| 2 | Audio flyout: devices (output / input) + per-app mixer | done |
 | 3 | Bluetooth + control center (Wi-Fi, Bluetooth, brightness, volume) | planned |
 | 4 | Dock (auto-hides; also hides when a window covers it) | planned |
 | 5 | System tray dropdown | planned |
 
 ## Getting it
 
-Every push to `main` is built automatically. Download `betterui.exe` from the
-**Latest build** release on the Releases page and run it. No installer and no
-other software needed. See the [Code signing policy](#code-signing-policy).
+Download `betterui.exe` from the newest release on the
+[Releases page](https://github.com/Thundr-cod/betterUI/releases) and run it.
+No installer and no other software needed.
+
+## Versions
+
+Every pull request raises the version in `Cargo.toml` (CI checks this), and
+merging it publishes a release tagged `v<version>`. Releases before `v0.1.0`
+are pre-releases; `v0.1.0` marks the finished MVP.
+
+| Release | Contents |
+| --- | --- |
+| v0.0.1 | Top bar, taskbar replacement, opacity/blur, audio flyout |
+| v0.0.2 | Bluetooth + control center (planned) |
+| v0.0.3 | Dock (planned) |
+| v0.1.0 | System tray dropdown — MVP complete (planned) | See the [Code signing policy](#code-signing-policy).
 
 ## Using it
 
