@@ -26,3 +26,24 @@ pub unsafe trait IPolicyConfig: IUnknown {
     fn SetDefaultEndpoint(&self, device_id: PCWSTR, role: ERole) -> HRESULT;
     fn SetEndpointVisibility(&self) -> HRESULT;
 }
+
+/// Make `device_id` the default endpoint for every role (apps, media, calls).
+/// Lives in this module because the interface's methods are private to it.
+pub fn set_default_endpoint(device_id: &str) {
+    use windows::Win32::Media::Audio::{eCommunications, eConsole, eMultimedia};
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
+    let wide = HSTRING::from(device_id);
+    unsafe {
+        match CoCreateInstance::<_, IPolicyConfig>(&CLSID_POLICY_CONFIG, None, CLSCTX_ALL) {
+            Ok(pc) => {
+                for role in [eConsole, eMultimedia, eCommunications] {
+                    let hr = pc.SetDefaultEndpoint(PCWSTR(wide.as_ptr()), role);
+                    if hr.is_err() {
+                        crate::log::write(&format!("SetDefaultEndpoint failed: {hr:?}"));
+                    }
+                }
+            }
+            Err(e) => crate::log::write(&format!("PolicyConfig unavailable: {e:?}")),
+        }
+    }
+}

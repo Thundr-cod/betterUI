@@ -9,12 +9,12 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 
-use windows::core::{w, Interface, HSTRING, PCWSTR, PWSTR, Result};
+use windows::core::{w, Interface, HSTRING, PWSTR, Result};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
-    eCapture, eCommunications, eConsole, eMultimedia, eRender, AudioSessionStateExpired,
+    eCapture, eConsole, eRender, AudioSessionStateExpired,
     EDataFlow, IAudioSessionControl2, IAudioSessionManager2, IMMDevice, IMMDeviceEnumerator,
     ISimpleAudioVolume, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
 };
@@ -27,7 +27,6 @@ use windows::Win32::System::Threading::{
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
-use crate::policy::{IPolicyConfig, CLSID_POLICY_CONFIG};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Flow {
@@ -182,20 +181,7 @@ impl Audio {
 
     /// Make `id` the default device for all roles (apps, media, calls).
     pub fn set_default(&self, id: &str) {
-        let wide = HSTRING::from(id);
-        unsafe {
-            match CoCreateInstance::<_, IPolicyConfig>(&CLSID_POLICY_CONFIG, None, CLSCTX_ALL) {
-                Ok(pc) => {
-                    for role in [eConsole, eMultimedia, eCommunications] {
-                        let hr = pc.SetDefaultEndpoint(PCWSTR(wide.as_ptr()), role);
-                        if hr.is_err() {
-                            crate::log::write(&format!("SetDefaultEndpoint failed: {hr:?}"));
-                        }
-                    }
-                }
-                Err(e) => crate::log::write(&format!("PolicyConfig unavailable: {e:?}")),
-            }
-        }
+        crate::policy::set_default_endpoint(id);
     }
 
     /// Apps with audio sessions on the default output device.
