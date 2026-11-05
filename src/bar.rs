@@ -2,7 +2,7 @@
 //
 // Left:   RAM usage, network connection
 // Centre: date and time
-// Right:  audio (part 2); later system tray, Bluetooth, control center
+// Right:  Bluetooth, control center, audio (later: system tray)
 //
 // The bar only repaints when something it shows has changed (at most once a
 // second), so it uses almost no CPU while idle.
@@ -41,6 +41,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::appbar::{self, ABN_FULLSCREENAPP, ABN_POSCHANGED};
 use crate::audio::{Audio, Flow, Level};
 use crate::audio_flyout::{self, Tab, WM_AUDIO_CHANGED};
+use crate::panel::{self, Kind};
 use crate::ui::{self, R};
 use crate::backdrop;
 use crate::config::Config;
@@ -58,6 +59,8 @@ const DIM: Color = Color(1.0, 1.0, 1.0, 0.55);
 // Segoe Fluent Icons glyphs
 const ICON_WIFI: &str = "\u{E701}";
 const ICON_ETHERNET: &str = "\u{E839}";
+const ICON_BLUETOOTH: &str = "\u{E702}";
+const ICON_CONTROL_CENTER: &str = "\u{E9E9}";
 
 // ---- Messages / timers ----------------------------------------------------
 const WM_APPBAR: u32 = WM_APP + 1;
@@ -97,6 +100,8 @@ struct Bar {
     audio: Option<Audio>,
     volume: Option<Level>,
     audio_btn: R,
+    bt_btn: R,
+    cc_btn: R,
     origin: (i32, i32),
 }
 
@@ -146,6 +151,8 @@ pub fn run() -> Result<()> {
             let tab = match arg.as_str() {
                 "--test-open=audio-devices" => Some(0),
                 "--test-open=audio-mixer" => Some(1),
+                "--test-open=bluetooth" => Some(2),
+                "--test-open=control-center" => Some(3),
                 _ => None,
             };
             if let Some(t) = tab {
@@ -241,6 +248,8 @@ impl Bar {
             audio,
             volume,
             audio_btn: R::default(),
+            bt_btn: R::default(),
+            cc_btn: R::default(),
             origin: (0, 0),
         })
     }
@@ -304,6 +313,10 @@ impl Bar {
                 let y = ((lp.0 >> 16) & 0xFFFF) as u16 as i16 as f32;
                 if self.audio_btn.contains(x, y) {
                     self.open_audio(None);
+                } else if self.cc_btn.contains(x, y) {
+                    self.open_panel(Kind::ControlCenter, false);
+                } else if self.bt_btn.contains(x, y) {
+                    self.open_panel(Kind::Bluetooth, false);
                 }
                 Some(LRESULT(0))
             }
@@ -330,7 +343,12 @@ impl Bar {
                 Some(LRESULT(0))
             }
             WM_TEST_OPEN => {
-                self.open_audio(Some(if wp.0 == 1 { Tab::Mixer } else { Tab::Devices }));
+                match wp.0 {
+                    0 => self.open_audio(Some(Tab::Devices)),
+                    1 => self.open_audio(Some(Tab::Mixer)),
+                    2 => self.open_panel(Kind::Bluetooth, true),
+                    _ => self.open_panel(Kind::ControlCenter, true),
+                }
                 Some(LRESULT(0))
             }
             m if m != 0 && m == self.taskbar_created => {
@@ -388,21 +406,33 @@ impl Bar {
         changed
     }
 
-    fn open_audio(&mut self, tab: Option<Tab>) {
-        let mut b = self.audio_btn;
-        if b.w <= 0.0 {
-            // Not drawn yet (only possible right after start-up): use the
-            // right end of the bar, where the button will be.
+    /// Screen rectangle of a bar button, for placing its flyout. Before the
+    /// first paint (only possible right after start-up) the buttons have no
+    /// position yet, so fall back to the right end of the bar.
+    fn anchor(&self, b: R) -> RECT {
+        let b = if b.w > 0.0 {
+            b
+        } else {
             let s = self.scale();
-            b = R::new(self.width as f32 - 50.0 * s, 0.0, 44.0 * s, self.height as f32);
-        }
-        let anchor = RECT {
+            R::new(self.width as f32 - 50.0 * s, 0.0, 44.0 * s, self.height as f32)
+        };
+        RECT {
             left: self.origin.0 + b.x as i32,
             top: self.origin.1 + b.y as i32,
             right: self.origin.0 + (b.x + b.w) as i32,
             bottom: self.origin.1 + self.height,
-        };
-        audio_flyout::toggle(anchor, self.hwnd, self.config.bar_opacity, tab);
+        }
+    }
+
+    fn open_audio(&mut self, tab: Option<Tab>) {
+        panel::hide();
+        audio_flyout::toggle(self.anchor(self.audio_btn), self.hwnd, self.config.bar_opacity, tab);
+    }
+
+    fn open_panel(&mut self, kind: Kind, force_open: bool) {
+        audio_flyout::hide();
+        let b = if kind == Kind::Bluetooth { self.bt_btn } else { self.cc_btn };
+        panel::toggle(kind, self.anchor(b), self.hwnd, self.config.bar_opacity, force_open);
     }
 
     /// Size and place the bar across the top of the primary monitor.
@@ -518,6 +548,8 @@ impl Bar {
             None => ui::ICON_MUTE,
         };
         let speaker = self.gfx.text(speaker, &self.fonts.icon, pill_h)?;
+        let bt_icon = self.gfx.text(ICON_BLUETOOTH, &self.fonts.icon, pill_h)?;
+        let cc_icon = self.gfx.text(ICON_CONTROL_CENTER, &self.fonts.icon, pill_h)?;
 
         let frame = self.gfx.begin(self.hwnd, self.width as u32, self.height as u32)?;
         let bg = Color(BG_RGB.0, BG_RGB.1, BG_RGB.2, self.config.bar_opacity as f32 / 100.0);
@@ -553,9 +585,19 @@ impl Bar {
         let speaker_color = if self.volume.is_some() { FG } else { DIM };
         pill(speaker_x, &[(&speaker, speaker_color)]);
         let audio_btn = R::new(speaker_x, 0.0, speaker_w, h);
+        let cc_w = cc_icon.width + 2.0 * pad;
+        let cc_x = speaker_x - gap - cc_w;
+        pill(cc_x, &[(&cc_icon, FG)]);
+        let cc_btn = R::new(cc_x, 0.0, cc_w, h);
+        let bt_w = bt_icon.width + 2.0 * pad;
+        let bt_x = cc_x - gap - bt_w;
+        pill(bt_x, &[(&bt_icon, FG)]);
+        let bt_btn = R::new(bt_x, 0.0, bt_w, h);
 
         let result = self.gfx.end(frame);
         self.audio_btn = audio_btn;
+        self.cc_btn = cc_btn;
+        self.bt_btn = bt_btn;
         result
     }
 }

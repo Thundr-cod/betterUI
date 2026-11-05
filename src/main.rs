@@ -5,10 +5,15 @@ mod appbar;
 mod audio;
 mod audio_flyout;
 mod backdrop;
+mod bluetooth;
+mod brightness;
 mod bar;
 mod config;
 mod log;
+mod panel;
 mod policy;
+mod popup;
+mod radios;
 mod render;
 mod sysinfo;
 mod taskbar;
@@ -32,7 +37,8 @@ fn main() {
         return;
     }
 
-    if args.iter().any(|a| a == "--demo-audio") {
+    // Demo data for the CI screenshot test (no real devices are touched).
+    if args.iter().any(|a| a == "--demo-audio" || a == "--demo") {
         audio::enable_demo();
     }
 

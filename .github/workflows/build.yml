@@ -38,15 +38,32 @@ jobs:
           name: betterui
           path: target/release/betterui.exe
 
-      - name: Publish as "Latest build" release
-        if: github.event_name == 'push'
+      - name: Read version from Cargo.toml
+        id: version
+        shell: bash
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if [[ "$v" == 0.0.* ]]; then echo "prerelease=true" >> "$GITHUB_OUTPUT"; else echo "prerelease=false" >> "$GITHUB_OUTPUT"; fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$v" > /dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Every merge to main that raises the version publishes a release
+      # tagged v<version>. 0.0.x releases are pre-releases; 0.1.0 is the MVP.
+      - name: Publish release v${{ steps.version.outputs.version }}
+        if: github.event_name == 'push' && steps.version.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest
-          name: Latest build
-          prerelease: true
+          tag_name: v${{ steps.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: betterUI v${{ steps.version.outputs.version }}
+          prerelease: ${{ steps.version.outputs.prerelease }}
+          generate_release_notes: true
           body: |
-            Automatic build of the latest commit on main (${{ github.sha }}).
+            Built from ${{ github.sha }}.
 
             Code signing policy: ${{ github.server_url }}/${{ github.repository }}#code-signing-policy
           files: target/release/betterui.exe
@@ -84,6 +101,8 @@ jobs:
             'screenshot.png'       = $null
             'audio-devices.png'    = '--test-open=audio-devices --demo-audio'
             'audio-mixer.png'      = '--test-open=audio-mixer --demo-audio'
+            'bluetooth.png'        = '--test-open=bluetooth --demo'
+            'control-center.png'   = '--test-open=control-center --demo'
           }
           $report = @()
           $failed = $false
@@ -133,3 +152,26 @@ jobs:
           git add -A
           git commit -q -m "Smoke test screenshot for $env:GITHUB_SHA"
           git push -q --force "https://x-access-token:$env:TOKEN@github.com/$env:GITHUB_REPOSITORY.git" ci-screenshots
+
+  # Every PR must raise the version in Cargo.toml to a version that has not
+  # been released yet, so each merge maps to exactly one release.
+  version-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Version must be new and higher than every release
+        shell: bash
+        run: |
+          new=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          last=$(git tag -l 'v[0-9]*' | sed 's/^v//' | sort -V | tail -n1)
+          echo "newest release: ${last:-none}   this PR: $new"
+          if [ -n "$last" ]; then
+            if [ "$new" = "$last" ] || [ "$(printf '%s\n%s\n' "$last" "$new" | sort -V | tail -n1)" != "$new" ]; then
+              echo "::error title=Version not raised::Raise 'version' in Cargo.toml above $last (this PR has $new). Each PR becomes one release."
+              exit 1
+            fi
+          fi
+          echo "Merging this PR will publish release v$new"
