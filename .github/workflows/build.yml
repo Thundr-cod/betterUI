@@ -101,6 +101,8 @@ jobs:
             'screenshot.png'       = $null
             'audio-devices.png'    = '--test-open=audio-devices --demo-audio'
             'audio-mixer.png'      = '--test-open=audio-mixer --demo-audio'
+            'bluetooth.png'        = '--test-open=bluetooth --demo'
+            'control-center.png'   = '--test-open=control-center --demo'
           }
           $report = @()
           $failed = $false
