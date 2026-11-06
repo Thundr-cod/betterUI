@@ -98,7 +98,11 @@ impl Icons {
     /// value above its alpha can only be straight alpha.
     fn fix_alpha(&self, source: &IWICBitmapSource) -> Result<IWICBitmapSource> {
         unsafe {
-            if source.GetPixelFormat()? != GUID_WICPixelFormat32bppBGRA {
+            let format = source.GetPixelFormat()?;
+            if format != GUID_WICPixelFormat32bppBGRA {
+                // Not expected from a 32-bit shell bitmap; keep the old
+                // behaviour and note it, so a wrong-looking icon can be traced.
+                crate::log::write(&format!("icon in unexpected pixel format {format:?}; alpha left as is"));
                 return Ok(source.clone());
             }
             let (mut w, mut h) = (0u32, 0u32);
@@ -126,9 +130,10 @@ impl Icons {
     }
 
     /// Convert to the premultiplied BGRA format Direct2D expects, resize it
-    /// once with a high-quality filter to exactly `size` pixels (so Direct2D
-    /// draws it 1:1 instead of shrinking a 256 px icon with a rough filter),
-    /// and copy it so it no longer depends on the source handle.
+    /// once with a high-quality filter so its longer side is exactly `size`
+    /// pixels (keeping its shape, so Direct2D draws it 1:1 instead of
+    /// shrinking a 256 px icon with a rough filter), and copy it so it no
+    /// longer depends on the source handle.
     fn to_pbgra(&self, source: &IWICBitmapSource, size: i32) -> Result<IWICBitmapSource> {
         unsafe {
             let converter = self.wic.CreateFormatConverter()?;
@@ -143,14 +148,17 @@ impl Icons {
             let converted: IWICBitmapSource = converter.cast()?;
             let (mut w, mut h) = (0u32, 0u32);
             converted.GetSize(&mut w, &mut h)?;
-            let size = size.max(1) as u32;
-            let sized: IWICBitmapSource = if w == size && h == size {
+            let size = size.max(1) as f64;
+            let fit = size / w.max(h).max(1) as f64;
+            let nw = ((w as f64 * fit).round() as u32).max(1);
+            let nh = ((h as f64 * fit).round() as u32).max(1);
+            let sized: IWICBitmapSource = if nw == w && nh == h {
                 converted
             } else {
                 // Scaling premultiplied pixels keeps edges free of dark or
                 // light fringes.
                 let scaler = self.wic.CreateBitmapScaler()?;
-                scaler.Initialize(&converted, size, size, WICBitmapInterpolationModeHighQualityCubic)?;
+                scaler.Initialize(&converted, nw, nh, WICBitmapInterpolationModeHighQualityCubic)?;
                 scaler.cast()?
             };
             let copy = self.wic.CreateBitmapFromSource(&sized, WICBitmapCacheOnLoad)?;

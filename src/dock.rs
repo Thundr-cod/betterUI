@@ -634,7 +634,7 @@ impl Dock {
             let iy = (slot.y + 3.0 * s).round();
             let dim = if item.windows.is_empty() { 0.9 } else { 1.0 };
             match self.icon_for(&item, icon_px as i32, &frame) {
-                Some(bmp) => frame.draw_bitmap(&bmp, ix, iy, icon_px, icon_px, dim),
+                Some(bmp) => frame.draw_icon(&bmp, ix, iy, icon_px, dim),
                 None => {
                     // No icon available: a tile with the app's first letter.
                     frame.round_rect(ix, iy, icon_px, icon_px, 9.0 * s, Color(1.0, 1.0, 1.0, 0.14));

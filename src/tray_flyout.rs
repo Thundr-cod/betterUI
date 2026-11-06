@@ -301,7 +301,7 @@ impl TrayFlyout {
                 }
             };
             if let Some(b) = bmp {
-                frame.draw_bitmap(&b, (r.x + (r.w - icon) / 2.0).round(), (r.y + (r.h - icon) / 2.0).round(), icon, icon, 1.0);
+                frame.draw_icon(&b, r.x + (r.w - icon) / 2.0, r.y + (r.h - icon) / 2.0, icon, 1.0);
             }
             cells.push(r);
         }
