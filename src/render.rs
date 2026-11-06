@@ -211,6 +211,17 @@ impl Frame {
         unsafe { self.target.CreateBitmapFromWicBitmap(source, None) }
     }
 
+    /// Draw an icon at its own pixel size (1:1, no resampling), centred in the
+    /// `size`-pixel square at (x, y) and snapped to whole pixels. Icons are
+    /// already resized to fit that square, so a non-square one keeps its shape.
+    pub fn draw_icon(&self, bmp: &ID2D1Bitmap, x: f32, y: f32, size: f32, opacity: f32) {
+        let px = unsafe { bmp.GetPixelSize() };
+        let (w, h) = (px.width as f32, px.height as f32);
+        let left = (x + (size - w) / 2.0).round();
+        let top = (y + (size - h) / 2.0).round();
+        self.draw_bitmap(bmp, left, top, w, h, opacity);
+    }
+
     pub fn draw_bitmap(&self, bmp: &ID2D1Bitmap, x: f32, y: f32, w: f32, h: f32, opacity: f32) {
         let r = D2D_RECT_F { left: x, top: y, right: x + w, bottom: y + h };
         unsafe {

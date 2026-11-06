@@ -615,7 +615,13 @@ impl Dock {
             let item = self.items[i].clone();
             if !item.pinned && prev_pinned && i > 0 {
                 // separator between pinned and other running apps
-                frame.round_rect(x + SEP * s / 2.0 - 1.0 * s, y + 8.0 * s, 2.0 * s, (SLOT - 16.0) * s, 1.0 * s, DIVIDER);
+                // Snapped to whole device pixels so it's one crisp line of
+                // even thickness at any display scale.
+                let dw = (2.0 * s).round().max(1.0);
+                let dx = (x + SEP * s / 2.0 - dw / 2.0).round();
+                let dy = (y + 8.0 * s).round();
+                let dh = ((SLOT - 16.0) * s).round();
+                frame.round_rect(dx, dy, dw, dh, 0.0, DIVIDER);
                 x += SEP * s;
             }
             prev_pinned = item.pinned;
@@ -623,11 +629,12 @@ impl Dock {
             if self.hovered == Some(i) {
                 frame.round_rect(slot.x + 2.0 * s, slot.y, slot.w - 4.0 * s, slot.h, 10.0 * s, FAINT);
             }
-            let ix = slot.x + (slot.w - icon_px) / 2.0;
-            let iy = slot.y + 3.0 * s;
+            // Whole pixels, so the icon (already sized to icon_px) is drawn 1:1.
+            let ix = (slot.x + (slot.w - icon_px) / 2.0).round();
+            let iy = (slot.y + 3.0 * s).round();
             let dim = if item.windows.is_empty() { 0.9 } else { 1.0 };
             match self.icon_for(&item, icon_px as i32, &frame) {
-                Some(bmp) => frame.draw_bitmap(&bmp, ix, iy, icon_px, icon_px, dim),
+                Some(bmp) => frame.draw_icon(&bmp, ix, iy, icon_px, dim),
                 None => {
                     // No icon available: a tile with the app's first letter.
                     frame.round_rect(ix, iy, icon_px, icon_px, 9.0 * s, Color(1.0, 1.0, 1.0, 0.14));
@@ -663,7 +670,7 @@ impl Dock {
         let icons = self.icons.as_mut()?;
         let source = match (&item.launch, item.windows.first()) {
             (Some(path), _) => icons.for_path(path, size),
-            (None, Some(h)) => icons.for_window(*h, &key),
+            (None, Some(h)) => icons.for_window(*h, &key, size),
             _ => None,
         };
         let bmp = source.and_then(|src| frame.bitmap(&src).ok());
