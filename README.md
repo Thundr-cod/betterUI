@@ -56,6 +56,40 @@ These are planned for after `v0.1.0` and are **not** part of the MVP.
 | **Themes** | Selectable colour, font and shape themes for the bar, flyouts and dock, beyond the current opacity and blur settings. |
 | **betterUI settings in Windows 11 Settings** | A betterUI page reachable from the Windows Settings app. Windows has no supported way for other apps to add their own page inside Settings, so this needs research first. The likely result is a betterUI settings window designed to match Windows 11 Settings, plus an easy way to open it. |
 | **Square or rounded windows toggle** | A setting to choose square or rounded corners for betterUI's own flyouts and dock. |
+| **Motion polish** | Small animations that make the bar, flyouts and dock feel smooth. See [Motion polish](#motion-polish) below. |
+
+### Motion polish
+
+The 20 animation rules below come from a popular checklist for good UI motion. Each one is mapped to where it would apply in betterUI.
+None of them are in the MVP. Today only the dock slides in and out.
+
+| # | Rule | Where it applies in betterUI |
+| --- | --- | --- |
+| 1 | Ease-out for entrances | Flyouts and the dock decelerate as they appear |
+| 2 | Dropdowns at 150–250 ms | Audio, Bluetooth, control center and tray flyouts open in about 200 ms |
+| 3 | Stagger list rows by 30 ms | Device lists, mixer rows, Bluetooth devices and tray icons appear one after another |
+| 4 | Scale to 0.97 on press | Bar buttons, dock icons, tiles and rows shrink slightly while pressed |
+| 5 | Stretch moving knobs 12% | Slider knobs and on/off switch knobs stretch while moving |
+| 6 | Stagger as details settle | Secondary text (percentages, "Connected", tooltips) fades in just after the main content |
+| 7 | Arcs for object movement | Larger moves, such as an app being pinned on the dock, travel along a gentle curve |
+| 8 | Pulse to confirm success | Brief pulse when a device is switched, an app is pinned or a radio turns on |
+| 9 | Ease-in-out for moves | Dock icons sliding to make room, flyouts resizing as content changes |
+| 10 | Start popovers at 0.95 | Flyouts open from 95% scale and 0 opacity to full |
+| 11 | Enter from the trigger | Each flyout grows out of the bar button that opened it |
+| 12 | Exit to the trigger | ...and shrinks back into it when closed |
+| 13 | No bounce on everyday UI | Bar, flyouts and dock stay calm; bounce only where it means something (e.g. app launch) |
+| 14 | Don't tween while held | Sliders follow the mouse exactly while dragging; easing only after release |
+| 15 | Make exits 20% shorter | Closing a flyout or hiding the dock is quicker than opening it |
+| 16 | Overlap old & new states | Switching the audio Devices/Mixer tabs crossfades instead of cutting |
+| 17 | Masks for reveals & colour | Tiles fill with the accent colour from the click point when switched on |
+| 18 | Crossfade icons + blur | The speaker icon, Wi-Fi/Bluetooth icons and mute states blend between glyphs |
+| 19 | Rubber band past bounds | Lists that scroll (long mixers, many tray icons) stretch slightly at the ends |
+| 20 | Reuse the same element (shared layout) | A bar button and its flyout behave as one object that expands, rather than a new window popping up |
+
+**Ground rules**
+- Animations only run during a transition, so idle CPU stays near zero.
+- Everything follows the Windows setting *Settings → Accessibility → Visual effects → Animation effects*. With it off, betterUI switches instantly.
+- Rules 11, 12 and 20 need the flyouts to be drawn so they can grow out of the bar. That's the biggest piece of work here and should be designed first.
 
 ## Using it
 
