@@ -954,17 +954,6 @@ impl Bar {
         self.cc_btn = cc_btn;
         self.bt_btn = bt_btn;
         self.tray_btn = tray_btn;
-        let hook_name = if self.monitor.primary { "bar".to_string() } else { format!("bar_{}", self.monitor.rect.left) };
-        crate::testhooks::write(
-            &hook_name,
-            self.hwnd,
-            &[
-                ("Tray".to_string(), tray_btn),
-                ("Bluetooth".to_string(), bt_btn),
-                ("ControlCenter".to_string(), cc_btn),
-                ("Audio".to_string(), audio_btn),
-            ],
-        );
         result
     }
 }

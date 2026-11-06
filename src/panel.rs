@@ -743,7 +743,6 @@ impl Panel {
             return Ok(());
         }
         let (items, _) = self.layout()?;
-        crate::testhooks::write("panel", self.hwnd, &self.hits.iter().map(|(r, h)| (format!("{h:?}"), *r)).collect::<Vec<_>>());
         let frame = self.gfx.begin(self.hwnd, self.width as u32, self.height as u32)?;
         frame.round_rect(0.0, 0.0, self.width as f32, self.height as f32, 0.0, Color(0.10, 0.10, 0.12, self.opacity));
         for item in &items {

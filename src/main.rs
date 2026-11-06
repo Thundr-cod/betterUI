@@ -22,7 +22,6 @@ mod radios;
 mod render;
 mod sysinfo;
 mod taskbar;
-mod testhooks;
 mod tray;
 mod tray_flyout;
 mod ui;

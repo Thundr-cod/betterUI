@@ -647,11 +647,6 @@ impl Dock {
             x += SLOT * s;
         }
         let result = self.gfx.end(frame);
-        crate::testhooks::write(
-            "dock",
-            self.hwnd,
-            &slots.iter().zip(&self.items).map(|(r, i)| (i.name.clone(), *r)).collect::<Vec<_>>(),
-        );
         self.slots = slots;
         result
     }
