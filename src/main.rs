@@ -5,6 +5,7 @@ mod appbar;
 mod apps;
 mod audio;
 mod audio_flyout;
+mod autostart;
 mod backdrop;
 mod bluetooth;
 mod brightness;
@@ -39,6 +40,12 @@ fn main() {
 
     // Emergency escape hatch: `betterui.exe --restore-taskbar` brings the
     // Windows taskbar back exactly as it was, without starting the shell.
+    // `--start-with-windows=on|off` changes the setting and exits.
+    if let Some(v) = args.iter().find_map(|a| a.strip_prefix("--start-with-windows=")) {
+        autostart::set_enabled(v == "on");
+        return;
+    }
+
     if args.iter().any(|a| a == "--restore-taskbar") {
         taskbar::restore();
         return;
@@ -67,6 +74,7 @@ fn main() {
     }
 
     log::write("betterUI starting");
+    autostart::refresh_path();
     if let Err(e) = bar::run() {
         log::write(&format!("fatal error: {e:?}"));
     }

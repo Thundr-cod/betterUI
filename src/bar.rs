@@ -72,6 +72,7 @@ const TIMER_TICK: usize = 1; // 1 s: clock + system info
 const TIMER_TASKBAR: usize = 2; // keep the native taskbar hidden
 const MENU_QUIT: usize = 1;
 const MENU_BLUR: usize = 2;
+const MENU_AUTOSTART: usize = 3;
 const MENU_OPACITY_BASE: usize = 1000; // 1000 + percent
 const OPACITY_CHOICES: [u32; 9] = [100, 90, 80, 70, 60, 50, 40, 30, 20];
 const MA_NOACTIVATE: isize = 3;
@@ -510,6 +511,8 @@ impl Bar {
             }
             let blur_check = if self.config.bar_blur { MF_CHECKED } else { MF_UNCHECKED };
             let _ = AppendMenuW(menu, MF_STRING | blur_check, MENU_BLUR, w!("Blur behind bar"));
+            let start_check = if crate::autostart::is_enabled() { MF_CHECKED } else { MF_UNCHECKED };
+            let _ = AppendMenuW(menu, MF_STRING | start_check, MENU_AUTOSTART, w!("Start with Windows"));
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());
             let _ = AppendMenuW(menu, MF_STRING, MENU_QUIT, w!("Quit betterUI (restores taskbar)"));
             let mut pt = POINT::default();
@@ -528,6 +531,8 @@ impl Bar {
             let cmd = cmd.0 as usize;
             if cmd == MENU_QUIT {
                 let _ = PostMessageW(self.hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+            } else if cmd == MENU_AUTOSTART {
+                crate::autostart::set_enabled(!crate::autostart::is_enabled());
             } else if cmd == MENU_BLUR {
                 let blur = !self.config.bar_blur;
                 self.config = Config::update(|c| c.bar_blur = blur);

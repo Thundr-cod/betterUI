@@ -60,6 +60,9 @@ These are planned for after `v0.1.0` and are **not** part of the MVP.
 ## Using it
 
 - **Quit:** right-click the bar → *Quit betterUI*. The Windows taskbar comes back.
+- **Start with Windows:** right-click the bar → *Start with Windows*. betterUI
+  then starts when you sign in (it also appears in Task Manager → Startup apps).
+  From a terminal: `betterui.exe --start-with-windows=on` (or `off`).
 - **Look:** right-click the bar → *Bar opacity* (20–100%) and *Blur behind bar*.
   Settings are saved in `%APPDATA%\betterUI\config.ini`.
 - **If the taskbar is ever stuck hidden** (for example betterUI was killed from

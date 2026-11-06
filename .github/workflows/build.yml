@@ -83,6 +83,19 @@ jobs:
         with:
           name: betterui
 
+      - name: Start with Windows setting
+        shell: pwsh
+        run: |
+          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+          Start-Process .\betterui.exe -ArgumentList '--start-with-windows=on' -Wait
+          $v = (Get-ItemProperty $key -ErrorAction SilentlyContinue).betterUI
+          Write-Output "registered: $v"
+          if (-not $v -or $v -notlike '*betterui.exe*') { Write-Output "::error::start with Windows was not registered"; exit 1 }
+          Start-Process .\betterui.exe -ArgumentList '--start-with-windows=off' -Wait
+          $v = (Get-ItemProperty $key -ErrorAction SilentlyContinue).betterUI
+          if ($v) { Write-Output "::error::start with Windows was not removed"; exit 1 }
+          Write-Output "on/off works"
+
       - name: Run betterUI and take screenshots
         shell: pwsh
         run: |
