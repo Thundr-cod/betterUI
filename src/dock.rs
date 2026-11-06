@@ -214,10 +214,6 @@ fn point_from(lp: LPARAM) -> (f32, f32) {
     )
 }
 
-fn intersects(a: &RECT, b: &RECT) -> bool {
-    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
-}
-
 impl Dock {
     fn scale(&self) -> f32 {
         self.dpi.max(96) as f32 / 96.0
@@ -401,10 +397,7 @@ impl Dock {
         }
         if self.mode == DockMode::Smart && self.ticks % 3 == 0 {
             let dock = self.shown_rect();
-            self.covered = apps::app_windows()
-                .iter()
-                .filter_map(|w| apps::window_rect(w.hwnd))
-                .any(|r| intersects(&r, &dock));
+            self.covered = apps::any_window_overlaps(&dock);
         }
 
         let mut cursor = POINT::default();
@@ -461,31 +454,7 @@ impl Dock {
     }
 
     fn fullscreen_in_front(&self) -> bool {
-        unsafe {
-            let fg = GetForegroundWindow();
-            if fg.is_invalid() {
-                return false;
-            }
-            let mut pid = 0u32;
-            windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(fg, Some(&mut pid));
-            if pid == windows::Win32::System::Threading::GetCurrentProcessId() {
-                return false;
-            }
-            let mut r = RECT::default();
-            if windows::Win32::UI::WindowsAndMessaging::GetWindowRect(fg, &mut r).is_err() {
-                return false;
-            }
-            let m = self.monitor;
-            let cls = {
-                let mut buf = [0u16; 64];
-                let n = windows::Win32::UI::WindowsAndMessaging::GetClassNameW(fg, &mut buf);
-                String::from_utf16_lossy(&buf[..n.max(0) as usize])
-            };
-            if cls == "Progman" || cls == "WorkerW" {
-                return false;
-            }
-            r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom
-        }
+        apps::fullscreen_on(&self.monitor)
     }
 
     fn set_target_hidden(&mut self, hidden: bool) {

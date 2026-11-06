@@ -12,6 +12,8 @@ pub struct Config {
     /// Show the dock at the bottom of the screen.
     pub dock_enabled: bool,
     pub dock_mode: DockMode,
+    /// When the top bar hides (same choices as the dock; default: always shown).
+    pub bar_mode: DockMode,
     /// Collect tray icons for the bar's tray dropdown.
     pub tray_enabled: bool,
 }
@@ -27,7 +29,7 @@ pub enum DockMode {
 }
 
 impl DockMode {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             DockMode::Smart => "smart",
             DockMode::AutoHide => "autohide",
@@ -38,7 +40,7 @@ impl DockMode {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { bar_opacity: 60, bar_blur: true, dock_enabled: true, dock_mode: DockMode::Smart, tray_enabled: true }
+        Self { bar_opacity: 60, bar_blur: true, dock_enabled: true, dock_mode: DockMode::Smart, bar_mode: DockMode::Always, tray_enabled: true }
     }
 }
 
@@ -66,6 +68,13 @@ impl Config {
                 "bar_blur" => c.bar_blur = matches!(value, "true" | "on" | "yes" | "1"),
                 "dock_enabled" => c.dock_enabled = matches!(value, "true" | "on" | "yes" | "1"),
                 "tray_enabled" => c.tray_enabled = matches!(value, "true" | "on" | "yes" | "1"),
+                "bar_mode" => {
+                    c.bar_mode = match value {
+                        "autohide" => DockMode::AutoHide,
+                        "smart" => DockMode::Smart,
+                        _ => DockMode::Always,
+                    }
+                }
                 "dock_mode" => {
                     c.dock_mode = match value {
                         "autohide" => DockMode::AutoHide,
@@ -100,12 +109,15 @@ impl Config {
              dock_enabled = {}\n\
              # dock_mode: smart (hide when a window covers it), autohide, always\n\
              dock_mode = {}\n\
+             # bar_mode: always (keeps its strip), autohide, smart (hide when a window covers it)\n\
+             bar_mode = {}\n\
              # tray_enabled: true/false, show the system tray dropdown on the bar\n\
              tray_enabled = {}\n",
             self.bar_opacity,
             self.bar_blur,
             self.dock_enabled,
             self.dock_mode.as_str(),
+            self.bar_mode.as_str(),
             self.tray_enabled
         );
         if let Err(e) = fs::write(path(), text) {

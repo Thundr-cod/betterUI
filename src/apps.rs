@@ -280,3 +280,45 @@ fn window_title(hwnd: HWND) -> String {
     let n = unsafe { GetWindowTextW(hwnd, &mut buf) };
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
 }
+
+/// Is a fullscreen app (game, video) in front on the monitor `m`?
+pub fn fullscreen_on(m: &RECT) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect};
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.is_invalid() {
+            return false;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(fg, Some(&mut pid));
+        if pid == GetCurrentProcessId() {
+            return false;
+        }
+        if matches!(class_name(fg).as_str(), "Progman" | "WorkerW") {
+            return false;
+        }
+        let mut r = RECT::default();
+        if GetWindowRect(fg, &mut r).is_err() {
+            return false;
+        }
+        r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom
+    }
+}
+
+/// Does any app window overlap `area`?
+pub fn any_window_overlaps(area: &RECT) -> bool {
+    app_windows().iter().filter_map(|w| window_rect(w.hwnd)).any(|r| {
+        r.left < area.right && area.left < r.right && r.top < area.bottom && area.top < r.bottom
+    })
+}
+
+/// Is one of betterUI's own windows (a flyout or menu) in front?
+pub fn own_window_in_front() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    unsafe {
+        let fg = GetForegroundWindow();
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(fg, Some(&mut pid));
+        pid == GetCurrentProcessId()
+    }
+}

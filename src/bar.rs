@@ -49,7 +49,8 @@ use crate::panel::{self, Kind};
 use crate::{tray, tray_flyout};
 use crate::ui::{self, R};
 use crate::backdrop;
-use crate::config::Config;
+use crate::apps;
+use crate::config::{Config, DockMode};
 use crate::render::{Color, Gfx, Text, ICON_FONT, TEXT_FONT};
 use crate::sysinfo::{self, Memory, Network};
 use crate::{log, taskbar};
@@ -73,9 +74,15 @@ const WM_APPBAR: u32 = WM_APP + 1;
 const TIMER_TICK: usize = 1; // 1 s: clock + system info
 const TIMER_TASKBAR: usize = 2; // keep the native taskbar hidden
 const TIMER_REBUILD: usize = 3; // monitors changed (debounced)
+const TIMER_POLL: usize = 4; // 100 ms: auto-hide (mouse at top edge, windows covering)
+const TIMER_ANIM: usize = 5; // ~60 fps while sliding in or out
+const HIDE_DELAY_TICKS: u32 = 4; // wait 400 ms before hiding
 const MENU_QUIT: usize = 1;
 const MENU_BLUR: usize = 2;
 const MENU_AUTOSTART: usize = 3;
+const MENU_BAR_ALWAYS: usize = 21;
+const MENU_BAR_AUTOHIDE: usize = 22;
+const MENU_BAR_SMART: usize = 23;
 const MENU_OPACITY_BASE: usize = 1000; // 1000 + percent
 const OPACITY_CHOICES: [u32; 9] = [100, 90, 80, 70, 60, 50, 40, 30, 20];
 const MA_NOACTIVATE: isize = 3;
@@ -148,6 +155,14 @@ struct Bar {
     cc_btn: R,
     tray_btn: R,
     origin: (i32, i32),
+    // Auto-hide (bar_mode autohide / smart). offset is 0 when shown and
+    // negative (slid up above the screen edge) when hidden.
+    offset: f32,
+    target_hidden: bool,
+    hide_ticks: u32,
+    covered: bool,
+    animating: bool,
+    polls: u64,
 }
 
 pub fn run() -> Result<()> {
@@ -286,7 +301,11 @@ fn create_bar(monitor: Monitor) -> Result<Bar> {
         style_window(hwnd);
         let mut bar = Bar::new(hwnd, monitor)?;
         backdrop::set_blur(hwnd, bar.config.bar_blur);
-        appbar::register(hwnd, WM_APPBAR);
+        if bar.config.bar_mode == DockMode::Always {
+            appbar::register(hwnd, WM_APPBAR);
+        } else {
+            SetTimer(hwnd, TIMER_POLL, 100, None);
+        }
         bar.reposition();
         Ok(bar)
     }
@@ -377,6 +396,12 @@ impl Bar {
             cc_btn: R::default(),
             tray_btn: R::default(),
             origin: (0, 0),
+            offset: 0.0,
+            target_hidden: false,
+            hide_ticks: 0,
+            covered: false,
+            animating: false,
+            polls: 0,
         })
     }
 
@@ -403,6 +428,8 @@ impl Bar {
                 match wp.0 {
                     TIMER_TICK => self.tick(),
                     TIMER_TASKBAR => taskbar::rehide_if_visible(),
+                    TIMER_POLL => self.poll(),
+                    TIMER_ANIM => self.animate(),
                     TIMER_REBUILD => unsafe {
                         let _ = KillTimer(self.hwnd, TIMER_REBUILD);
                         REBUILD.with(|r| r.set(true));
@@ -435,7 +462,11 @@ impl Bar {
                 Some(LRESULT(0))
             }
             WM_CONFIG_CHANGED => {
+                let old_mode = self.config.bar_mode;
                 self.config = Config::load();
+                if self.config.bar_mode != old_mode {
+                    self.apply_mode(old_mode);
+                }
                 backdrop::set_blur(self.hwnd, self.config.bar_blur);
                 unsafe {
                     let _ = InvalidateRect(self.hwnd, None, false);
@@ -510,7 +541,9 @@ impl Bar {
                 if self.monitor.primary {
                     taskbar::hide();
                 }
-                appbar::register(self.hwnd, WM_APPBAR);
+                if self.config.bar_mode == DockMode::Always {
+                    appbar::register(self.hwnd, WM_APPBAR);
+                }
                 self.reposition();
                 Some(LRESULT(0))
             }
@@ -599,6 +632,121 @@ impl Bar {
         tray_flyout::toggle(self.anchor(self.tray_btn), self.config.bar_opacity, force_open);
     }
 
+    // ---- Auto-hide ------------------------------------------------------------
+
+    /// Switch between always-shown (reserves its strip) and auto-hide.
+    fn apply_mode(&mut self, old: DockMode) {
+        unsafe {
+            if self.config.bar_mode == DockMode::Always {
+                let _ = KillTimer(self.hwnd, TIMER_POLL);
+                self.target_hidden = false;
+                self.offset = 0.0;
+                appbar::register(self.hwnd, WM_APPBAR);
+                let _ = ShowWindow(self.hwnd, SW_SHOWNA);
+            } else {
+                if old == DockMode::Always {
+                    appbar::unregister(self.hwnd);
+                }
+                SetTimer(self.hwnd, TIMER_POLL, 100, None);
+            }
+        }
+        self.reposition();
+    }
+
+    fn hidden_offset(&self) -> f32 {
+        -(self.height as f32) - 2.0
+    }
+
+    fn poll(&mut self) {
+        if self.config.bar_mode == DockMode::Always {
+            return;
+        }
+        self.polls += 1;
+        let bar = RECT {
+            left: self.monitor.rect.left,
+            top: self.monitor.rect.top,
+            right: self.monitor.rect.right,
+            bottom: self.monitor.rect.top + self.height,
+        };
+        if self.config.bar_mode == DockMode::Smart && self.polls % 3 == 0 {
+            self.covered = apps::any_window_overlaps(&bar);
+        }
+        let mut cursor = POINT::default();
+        unsafe {
+            let _ = GetCursorPos(&mut cursor);
+        }
+        let m = self.monitor.rect;
+        let in_x = cursor.x >= m.left && cursor.x < m.right;
+        let at_edge = in_x && cursor.y <= m.top + 1 && cursor.y >= m.top - 1;
+        let visible = self.offset > self.hidden_offset() + 1.0;
+        let over = visible && in_x && cursor.y >= m.top && cursor.y <= bar.bottom + 8;
+
+        let want_visible = if apps::fullscreen_on(&m) {
+            false
+        } else if apps::own_window_in_front() {
+            // A flyout or menu from betterUI is open: keep the bar with it.
+            visible || at_edge
+        } else {
+            match self.config.bar_mode {
+                DockMode::AutoHide => at_edge || over,
+                _ => !self.covered || at_edge || over,
+            }
+        };
+        if want_visible {
+            self.hide_ticks = 0;
+            self.set_target_hidden(false);
+        } else {
+            self.hide_ticks += 1;
+            if self.hide_ticks >= HIDE_DELAY_TICKS {
+                self.set_target_hidden(true);
+            }
+        }
+    }
+
+    fn set_target_hidden(&mut self, hidden: bool) {
+        if hidden == self.target_hidden {
+            return;
+        }
+        self.target_hidden = hidden;
+        unsafe {
+            if !hidden {
+                let _ = ShowWindow(self.hwnd, SW_SHOWNA);
+            }
+            if !self.animating {
+                self.animating = true;
+                SetTimer(self.hwnd, TIMER_ANIM, 15, None);
+            }
+        }
+    }
+
+    fn animate(&mut self) {
+        let target = if self.target_hidden { self.hidden_offset() } else { 0.0 };
+        let diff = target - self.offset;
+        if diff.abs() < 1.0 {
+            self.offset = target;
+            self.animating = false;
+            unsafe {
+                let _ = KillTimer(self.hwnd, TIMER_ANIM);
+                if self.target_hidden {
+                    let _ = ShowWindow(self.hwnd, SW_HIDE);
+                }
+            }
+        } else {
+            self.offset += diff * 0.35;
+        }
+        unsafe {
+            let _ = SetWindowPos(
+                self.hwnd,
+                HWND_TOPMOST,
+                self.origin.0,
+                self.origin.1 + self.offset.round() as i32,
+                self.width,
+                self.height,
+                SWP_NOACTIVATE,
+            );
+        }
+    }
+
     /// Size and place the bar across the top of its monitor.
     fn reposition(&mut self) {
         unsafe {
@@ -621,7 +769,12 @@ impl Bar {
             }
 
             let height = (BAR_HEIGHT * self.scale()).round() as i32;
-            let rc = appbar::reserve_top(self.hwnd, mi.rcMonitor, height);
+            let rc = if self.config.bar_mode == DockMode::Always {
+                appbar::reserve_top(self.hwnd, mi.rcMonitor, height)
+            } else {
+                // Auto-hide: float over the top edge without reserving space.
+                RECT { left: mi.rcMonitor.left, top: mi.rcMonitor.top, right: mi.rcMonitor.right, bottom: mi.rcMonitor.top + height }
+            };
             self.origin = (rc.left, rc.top);
             self.width = rc.right - rc.left;
             self.height = rc.bottom - rc.top;
@@ -629,7 +782,7 @@ impl Bar {
                 self.hwnd,
                 HWND_TOPMOST,
                 rc.left,
-                rc.top,
+                rc.top + self.offset.round() as i32,
                 self.width,
                 self.height,
                 SWP_NOACTIVATE,
@@ -649,6 +802,14 @@ impl Bar {
                     let _ = AppendMenuW(sub, MF_STRING | check, MENU_OPACITY_BASE + pct as usize, &label);
                 }
                 let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, w!("Bar opacity"));
+            }
+            if let Ok(sub) = CreatePopupMenu() {
+                let mode = self.config.bar_mode;
+                let check = |m: DockMode| if mode == m { MF_CHECKED } else { MF_UNCHECKED };
+                let _ = AppendMenuW(sub, MF_STRING | check(DockMode::Always), MENU_BAR_ALWAYS, w!("Always show"));
+                let _ = AppendMenuW(sub, MF_STRING | check(DockMode::AutoHide), MENU_BAR_AUTOHIDE, w!("Auto-hide (show at top edge)"));
+                let _ = AppendMenuW(sub, MF_STRING | check(DockMode::Smart), MENU_BAR_SMART, w!("Hide when a window covers it"));
+                let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, w!("Bar visibility"));
             }
             let blur_check = if self.config.bar_blur { MF_CHECKED } else { MF_UNCHECKED };
             let _ = AppendMenuW(menu, MF_STRING | blur_check, MENU_BLUR, w!("Blur behind bar"));
@@ -672,6 +833,15 @@ impl Bar {
             let cmd = cmd.0 as usize;
             if cmd == MENU_QUIT {
                 PostQuitMessage(0);
+            } else if (MENU_BAR_ALWAYS..=MENU_BAR_SMART).contains(&cmd) {
+                let mode = match cmd {
+                    MENU_BAR_AUTOHIDE => DockMode::AutoHide,
+                    MENU_BAR_SMART => DockMode::Smart,
+                    _ => DockMode::Always,
+                };
+                // Every bar (including this one) picks it up from the settings.
+                Config::update(|c| c.bar_mode = mode);
+                notify_config_changed();
             } else if cmd == MENU_AUTOSTART {
                 crate::autostart::set_enabled(!crate::autostart::is_enabled());
             } else if cmd == MENU_BLUR {
