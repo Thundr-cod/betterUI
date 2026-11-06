@@ -287,5 +287,24 @@ Run-Scenario '6-system-tray' {
     Keys '{ESC}'
 }
 
+Run-Scenario '7-bar-autohide' {
+    # Right-click menu -> Bar visibility -> Auto-hide
+    Click 300 16 -Right
+    Keys '{DOWN}'; Keys '{DOWN}'; Keys '{RIGHT}'; Keys '{DOWN}'; Keys '{ENTER}'
+    Move-To 512 400
+    Start-Sleep -Seconds 2          # bar slides away
+    Move-To 512 0 600               # touch the top edge: it slides back
+    Start-Sleep -Seconds 2
+    Move-To 512 400
+    Start-Sleep -Seconds 2          # and hides again
+    Move-To 300 0 600
+    Start-Sleep -Milliseconds 800
+    # Back to always shown
+    Click 300 16 -Right
+    Keys '{DOWN}'; Keys '{DOWN}'; Keys '{RIGHT}'; Keys '{ENTER}'
+    Move-To 512 400
+    Start-Sleep -Seconds 2          # stays put
+}
+
 Get-Process betterui -ErrorAction SilentlyContinue | Stop-Process -Force
 Get-ChildItem $Out | Format-Table Name, Length
