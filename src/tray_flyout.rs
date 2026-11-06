@@ -312,7 +312,7 @@ impl TrayFlyout {
             Some(icon) if !icon.tip.is_empty() => (icon.tip.lines().next().unwrap_or("").to_string(), FG),
             Some(_) => (String::new(), DIM),
             None if self.items.is_empty() => ("No tray icons".to_string(), DIM),
-            None => ("Click an icon to open it, right-click for its menu".to_string(), DIM),
+            None => ("Click: open · Right-click: menu".to_string(), DIM),
         };
         if !text.0.is_empty() {
             let t = self.gfx.text_fit(&text.0, &self.font, self.width as f32 - 2.0 * pad - 8.0 * s, self.tip_height())?;
