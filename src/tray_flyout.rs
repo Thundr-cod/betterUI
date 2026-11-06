@@ -294,14 +294,14 @@ impl TrayFlyout {
                 None => {
                     let made = self.items[i]
                         .icon
-                        .and_then(|h| self.icons_wic.as_ref().and_then(|w| w.for_hicon(h)))
+                        .and_then(|h| self.icons_wic.as_ref().and_then(|w| w.for_hicon(h, icon as i32)))
                         .and_then(|src| frame.bitmap(&src).ok());
                     self.bitmaps.insert(handle, made.clone());
                     made
                 }
             };
             if let Some(b) = bmp {
-                frame.draw_bitmap(&b, r.x + (r.w - icon) / 2.0, r.y + (r.h - icon) / 2.0, icon, icon, 1.0);
+                frame.draw_bitmap(&b, (r.x + (r.w - icon) / 2.0).round(), (r.y + (r.h - icon) / 2.0).round(), icon, icon, 1.0);
             }
             cells.push(r);
         }
