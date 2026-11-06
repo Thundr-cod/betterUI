@@ -12,6 +12,9 @@ pub struct RadioStates {
     pub bluetooth: Option<bool>,
 }
 
+/// Demo mode (CI recordings): Wi-Fi and Bluetooth on/off, remembered.
+static DEMO_RADIOS: std::sync::Mutex<(bool, bool)> = std::sync::Mutex::new((true, true));
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Wifi,
@@ -33,7 +36,8 @@ fn radios() -> Result<Vec<Radio>> {
 
 pub fn states() -> RadioStates {
     if crate::audio::demo() {
-        return RadioStates { wifi: Some(true), bluetooth: Some(true) };
+        let (wifi, bt) = *DEMO_RADIOS.lock().unwrap_or_else(|e| e.into_inner());
+        return RadioStates { wifi: Some(wifi), bluetooth: Some(bt) };
     }
     let mut s = RadioStates::default();
     match radios() {
@@ -56,6 +60,11 @@ pub fn states() -> RadioStates {
 
 pub fn set(kind: Kind, on: bool) {
     if crate::audio::demo() {
+        let mut d = DEMO_RADIOS.lock().unwrap_or_else(|e| e.into_inner());
+        match kind {
+            Kind::Wifi => d.0 = on,
+            Kind::Bluetooth => d.1 = on,
+        }
         return;
     }
     let want = match kind {
