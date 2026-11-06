@@ -8,7 +8,7 @@ use windows::Win32::Graphics::Direct2D::Common::{
     D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1Factory, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
+    D2D1CreateFactory, ID2D1Bitmap, ID2D1Factory, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, ID2D1HwndRenderTarget, ID2D1SolidColorBrush,
     D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT,
     D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS_NONE,
     D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
@@ -22,6 +22,7 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_WORD_WRAPPING_NO_WRAP,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+use windows::Win32::Graphics::Imaging::IWICBitmapSource;
 
 pub const ICON_FONT: &str = "Segoe Fluent Icons";
 pub const TEXT_FONT: &str = "Segoe UI Variable Text";
@@ -47,6 +48,9 @@ pub struct Text {
 }
 
 pub struct Gfx {
+    /// Bumped every time the render target is (re)created; bitmaps made
+    /// for an older target must be recreated.
+    pub generation: u64,
     d2d: ID2D1Factory,
     dwrite: IDWriteFactory,
     target: Option<ID2D1HwndRenderTarget>,
@@ -58,7 +62,7 @@ impl Gfx {
         unsafe {
             let d2d: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
-            Ok(Self { d2d, dwrite, target: None, brush: None })
+            Ok(Self { generation: 0, d2d, dwrite, target: None, brush: None })
         }
     }
 
@@ -148,6 +152,7 @@ impl Gfx {
                 let brush = target.CreateSolidColorBrush(&Color(1.0, 1.0, 1.0, 1.0).d2d(), None)?;
                 self.target = Some(target);
                 self.brush = Some(brush);
+                self.generation += 1;
             }
         }
         let target = self.target.clone().unwrap();
@@ -198,6 +203,18 @@ impl Frame {
         unsafe {
             self.brush.SetColor(&color.d2d());
             self.target.FillEllipse(&e, &self.brush);
+        }
+    }
+
+    /// Upload a WIC image (e.g. an app icon) for drawing with this target.
+    pub fn bitmap(&self, source: &IWICBitmapSource) -> Result<ID2D1Bitmap> {
+        unsafe { self.target.CreateBitmapFromWicBitmap(source, None) }
+    }
+
+    pub fn draw_bitmap(&self, bmp: &ID2D1Bitmap, x: f32, y: f32, w: f32, h: f32, opacity: f32) {
+        let r = D2D_RECT_F { left: x, top: y, right: x + w, bottom: y + h };
+        unsafe {
+            self.target.DrawBitmap(bmp, Some(&r), opacity, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None);
         }
     }
 

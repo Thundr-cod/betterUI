@@ -86,6 +86,9 @@ jobs:
       - name: Run betterUI and take screenshots
         shell: pwsh
         run: |
+          # Turn on Windows transparency effects (off by default on the runner)
+          Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name EnableTransparency -Value 1 -Type DWord -ErrorAction SilentlyContinue
+          $t = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -ErrorAction SilentlyContinue).EnableTransparency
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
           $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
           function Shot($file) {
@@ -103,6 +106,7 @@ jobs:
             'audio-mixer.png'      = '--test-open=audio-mixer --demo-audio'
             'bluetooth.png'        = '--test-open=bluetooth --demo'
             'control-center.png'   = '--test-open=control-center --demo'
+            'dock.png'             = '--test-open=dock'
           }
           $report = @()
           $failed = $false
@@ -124,6 +128,7 @@ jobs:
           ref: $env:GITHUB_HEAD_REF$env:GITHUB_REF_NAME
           screen: $($b.Width)x$($b.Height)
           explorer running: $explorer
+          transparency effects: $t
           $($report -join "`n")
           --- log.txt ---
           $log

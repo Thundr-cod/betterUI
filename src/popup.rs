@@ -6,10 +6,10 @@ use windows::core::{Result, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{BOOL, HWND, RECT, TRUE};
 use windows::Win32::Graphics::Dwm::{
     DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE,
+    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
 };
 use windows::Win32::Graphics::Gdi::{
-    CreateRoundRectRgn, GetMonitorInfoW, MonitorFromRect, SetWindowRgn, MONITORINFO,
-    MONITOR_DEFAULTTOPRIMARY,
+    GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::MARGINS;
@@ -54,6 +54,7 @@ pub fn create(class: PCWSTR, title: PCWSTR, wndproc: WNDPROC) -> Result<HWND> {
         );
         let margins = MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 };
         let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
+        round_corners(hwnd);
         crate::backdrop::set_blur(hwnd, true);
         Ok(hwnd)
     }
@@ -79,12 +80,18 @@ pub fn place(anchor: &RECT, work: &RECT, w: i32, gap: i32) -> (i32, i32) {
     (x, y)
 }
 
-/// Clip the window to a rounded rectangle (this also rounds the blur).
-pub fn round_corners(hwnd: HWND, w: i32, h: i32, radius: i32) {
+/// Ask Windows 11 to round the window's corners. Unlike clipping the window
+/// to a region, this also rounds the blur behind it. (Windows turns rounding
+/// off on machines without a graphics driver, such as CI virtual machines.)
+pub fn round_corners(hwnd: HWND) {
+    let corners = DWMWCP_ROUND;
     unsafe {
-        let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, radius * 2, radius * 2);
-        // The window owns the region after this call; don't delete it.
-        SetWindowRgn(hwnd, rgn, true);
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &corners as *const _ as *const _,
+            std::mem::size_of_val(&corners) as u32,
+        );
     }
 }
 

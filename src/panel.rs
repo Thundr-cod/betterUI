@@ -274,7 +274,6 @@ impl Panel {
         let (x, y) = popup::place(&anchor, &work, self.width, (6.0 * s).round() as i32);
         unsafe {
             let _ = SetWindowPos(self.hwnd, HWND_TOPMOST, x, y, self.width, self.height, SWP_NOACTIVATE);
-            popup::round_corners(self.hwnd, self.width, self.height, (8.0 * s).round() as i32);
             self.gfx.resize(self.width as u32, self.height as u32);
             let _ = ShowWindow(self.hwnd, SW_SHOW);
             let _ = SetForegroundWindow(self.hwnd);
@@ -302,7 +301,6 @@ impl Panel {
             unsafe {
                 let _ = SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, self.width, self.height, SWP_NOACTIVATE | SWP_NOMOVE);
             }
-            popup::round_corners(self.hwnd, self.width, self.height, (8.0 * self.scale()).round() as i32);
             self.gfx.resize(self.width as u32, self.height as u32);
         }
     }

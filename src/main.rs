@@ -2,6 +2,7 @@
 #![windows_subsystem = "windows"]
 
 mod appbar;
+mod apps;
 mod audio;
 mod audio_flyout;
 mod backdrop;
@@ -9,10 +10,13 @@ mod bluetooth;
 mod brightness;
 mod bar;
 mod config;
+mod dock;
+mod icons;
 mod log;
 mod panel;
 mod policy;
 mod popup;
+mod procinfo;
 mod radios;
 mod render;
 mod sysinfo;
