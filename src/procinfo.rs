@@ -39,6 +39,15 @@ pub fn process_path(pid: u32) -> Option<String> {
 
 /// The "File description" from an exe's version info, e.g. "Google Chrome".
 pub fn file_description(path: &str) -> Option<String> {
+    version_string(path, "FileDescription")
+}
+
+/// The "Company" from an exe's version info, e.g. "Valve Corporation".
+pub fn company_name(path: &str) -> Option<String> {
+    version_string(path, "CompanyName")
+}
+
+fn version_string(path: &str, field: &str) -> Option<String> {
     unsafe {
         let wpath = HSTRING::from(path);
         let size = GetFileVersionInfoSizeW(&wpath, None);
@@ -65,7 +74,7 @@ pub fn file_description(path: &str) -> Option<String> {
         let lang = *(p as *const u16);
         let codepage = *(p as *const u16).add(1);
         let query = HSTRING::from(format!(
-            "\\StringFileInfo\\{lang:04x}{codepage:04x}\\FileDescription"
+            "\\StringFileInfo\\{lang:04x}{codepage:04x}\\{field}"
         ));
         if !VerQueryValueW(buf.as_ptr() as *const c_void, &query, &mut p, &mut len).as_bool()
             || len < 2

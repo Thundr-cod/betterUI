@@ -564,7 +564,7 @@ impl Dock {
                         } else if let Some(path) = &item.launch {
                             // Pin the exe that starts the app, not a helper
                             // that only draws its windows (Steam).
-                            let launcher = item.windows.first().and_then(|h| apps::launcher_for_window(*h));
+                            let launcher = apps::launcher_for(&item.windows);
                             self.pins.push(apps::pin_for_exe(launcher.as_deref().unwrap_or(path)));
                         }
                         apps::save_pins(&self.pins);
