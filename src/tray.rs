@@ -1,0 +1,446 @@
+// System tray host.
+//
+// Apps add their tray icons by sending a WM_COPYDATA message to the first
+// window of class "Shell_TrayWnd" (normally Explorer's taskbar). Windows 11
+// gives other programs no supported way to read those icons back, so, like
+// RetroBar and other taskbar replacements, betterUI registers its own
+// (invisible) "Shell_TrayWnd" window above Explorer's so that it receives
+// those messages first.
+//
+// Every message is passed straight on to Explorer's real taskbar as well, so
+// Explorer stays in sync: if betterUI quits or crashes, the icons are still
+// there and nothing is lost. Appbar messages (which also go to
+// "Shell_TrayWnd") are passed through untouched.
+//
+// At start-up the standard "TaskbarCreated" message is broadcast, which
+// makes every running app re-send its icons (the same thing apps do when
+// Explorer restarts).
+
+use std::cell::RefCell;
+use std::time::Instant;
+
+use windows::core::{w, Result, GUID};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::DataExchange::COPYDATASTRUCT;
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::WindowsAndMessaging::{
+    CopyIcon, CreateWindowExW, DefWindowProcW, DestroyIcon, FindWindowExW, GetWindowThreadProcessId,
+    IsWindow, KillTimer, PostMessageW, RegisterClassW, RegisterWindowMessageW, SendMessageTimeoutW,
+    SetTimer, SetWindowPos, HICON, HWND_BROADCAST, HWND_TOPMOST, SMTO_ABORTIFHUNG, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, WM_COPYDATA, WM_TIMER, WM_USER, WNDCLASSW, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP,
+};
+
+use crate::log;
+
+// Shell_NotifyIcon messages and flags (shellapi.h)
+const NIM_ADD: u32 = 0;
+const NIM_MODIFY: u32 = 1;
+const NIM_DELETE: u32 = 2;
+const NIM_SETVERSION: u32 = 4;
+const NIF_MESSAGE: u32 = 0x01;
+const NIF_ICON: u32 = 0x02;
+const NIF_TIP: u32 = 0x04;
+const NIF_STATE: u32 = 0x08;
+const NIF_GUID: u32 = 0x20;
+const NIS_HIDDEN: u32 = 0x01;
+const COPYDATA_TRAY: usize = 1;
+
+const TIMER_TOPMOST: usize = 1; // keep our window ahead of Explorer's
+const TIMER_REBROADCAST: usize = 2; // after Explorer restarts
+
+/// The 32-bit-compatible NOTIFYICONDATAW layout used on the wire, so 32-bit
+/// and 64-bit apps send the same thing. Handles are 32-bit values.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NotifyIconData32 {
+    cb_size: u32,
+    hwnd: u32,
+    uid: u32,
+    flags: u32,
+    callback_message: u32,
+    hicon: u32,
+    tip: [u16; 128],
+    state: u32,
+    state_mask: u32,
+    info: [u16; 256],
+    timeout_or_version: u32,
+    info_title: [u16; 64],
+    info_flags: u32,
+    guid: GUID,
+    balloon_icon: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct TrayMessage {
+    magic: u32,
+    message: u32,
+    nid: NotifyIconData32,
+}
+
+/// One tray icon as the dropdown shows it.
+#[derive(Clone)]
+pub struct TrayIcon {
+    pub owner: HWND,
+    pub uid: u32,
+    pub guid: Option<GUID>,
+    pub callback_message: u32,
+    pub version: u32,
+    /// Our own copy of the icon (destroyed when replaced or removed).
+    pub icon: Option<HICON>,
+    pub tip: String,
+    pub hidden: bool,
+}
+
+impl TrayIcon {
+    fn matches(&self, nid: &NotifyIconData32) -> bool {
+        if nid.flags & NIF_GUID != 0 {
+            self.guid == Some(nid.guid)
+        } else {
+            self.owner.0 as usize == nid.hwnd as usize && self.uid == nid.uid
+        }
+    }
+}
+
+struct Host {
+    hwnd: HWND,
+    icons: Vec<TrayIcon>,
+    taskbar_created: u32,
+    last_broadcast: Option<Instant>,
+    /// Told when the icon list changes (the dropdown).
+    on_change: Option<fn()>,
+}
+
+thread_local! {
+    static HOST: RefCell<Option<Host>> = const { RefCell::new(None) };
+}
+
+fn wide_to_string(buf: &[u16]) -> String {
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    String::from_utf16_lossy(&buf[..len])
+}
+
+fn handle(v: u32) -> *mut core::ffi::c_void {
+    v as usize as *mut core::ffi::c_void
+}
+
+/// Explorer's real taskbar window (not ours).
+fn explorer_tray(ours: HWND) -> Option<HWND> {
+    let mut after: Option<HWND> = None;
+    unsafe {
+        loop {
+            let found = FindWindowExW(None, after.unwrap_or_default(), w!("Shell_TrayWnd"), None).ok()?;
+            if found.is_invalid() {
+                return None;
+            }
+            if found != ours {
+                return Some(found);
+            }
+            after = Some(found);
+        }
+    }
+}
+
+pub fn start(on_change: fn()) {
+    if let Err(e) = start_inner(on_change) {
+        log::write(&format!("tray host could not start: {e:?}"));
+    }
+}
+
+fn start_inner(on_change: fn()) -> Result<()> {
+    unsafe {
+        let hinstance = GetModuleHandleW(None)?.into();
+        let class = w!("Shell_TrayWnd");
+        let wc = WNDCLASSW {
+            lpfnWndProc: Some(wndproc),
+            hInstance: hinstance,
+            lpszClassName: class,
+            ..Default::default()
+        };
+        if RegisterClassW(&wc) == 0 {
+            return Err(windows::core::Error::from_win32());
+        }
+        // Never shown; it only receives messages.
+        let hwnd = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+            class,
+            w!(""),
+            WS_POPUP,
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
+            hinstance,
+            None,
+        )?;
+        let taskbar_created = RegisterWindowMessageW(w!("TaskbarCreated"));
+        HOST.with(|h| {
+            *h.borrow_mut() = Some(Host { hwnd, icons: Vec::new(), taskbar_created, last_broadcast: None, on_change: Some(on_change) })
+        });
+        bring_to_front(hwnd);
+        SetTimer(hwnd, TIMER_TOPMOST, 5000, None);
+        broadcast_taskbar_created(taskbar_created);
+    }
+    Ok(())
+}
+
+fn bring_to_front(hwnd: HWND) {
+    unsafe {
+        let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
+    }
+}
+
+fn broadcast_taskbar_created(msg: u32) {
+    HOST.with(|h| {
+        if let Ok(mut g) = h.try_borrow_mut() {
+            if let Some(host) = g.as_mut() {
+                host.last_broadcast = Some(Instant::now());
+            }
+        }
+    });
+    unsafe {
+        let _ = PostMessageW(HWND_BROADCAST, msg, WPARAM(0), LPARAM(0));
+    }
+}
+
+/// Current tray icons (visible ones only), oldest first.
+pub fn icons() -> Vec<TrayIcon> {
+    if crate::audio::demo() {
+        return demo_icons();
+    }
+    HOST.with(|h| {
+        let Ok(mut g) = h.try_borrow_mut() else { return Vec::new() };
+        let Some(host) = g.as_mut() else { return Vec::new() };
+        // Drop icons whose app has gone away without removing them.
+        host.icons.retain(|i| {
+            let alive = unsafe { IsWindow(i.owner).as_bool() };
+            if !alive {
+                if let Some(icon) = i.icon {
+                    unsafe {
+                        let _ = DestroyIcon(icon);
+                    }
+                }
+            }
+            alive
+        });
+        host.icons.iter().filter(|i| !i.hidden && i.icon.is_some()).cloned().collect()
+    })
+}
+
+fn demo_icons() -> Vec<TrayIcon> {
+    use windows::Win32::UI::WindowsAndMessaging::{LoadIconW, IDI_APPLICATION, IDI_INFORMATION, IDI_SHIELD, IDI_WARNING};
+    [(IDI_SHIELD, "Windows Security"), (IDI_INFORMATION, "OneDrive - Up to date"), (IDI_APPLICATION, "Steam"), (IDI_WARNING, "Discord"), (IDI_APPLICATION, "NVIDIA Settings")]
+        .iter()
+        .enumerate()
+        .map(|(i, (id, tip))| TrayIcon {
+            owner: HWND::default(),
+            uid: i as u32,
+            guid: None,
+            callback_message: 0,
+            version: 4,
+            icon: unsafe { LoadIconW(None, *id).ok() },
+            tip: tip.to_string(),
+            hidden: false,
+        })
+        .collect()
+}
+
+/// Simulate a click on a tray icon, the way Explorer does: send the app the
+/// mouse messages it asked for, with its icon's position.
+pub fn click(icon: &TrayIcon, right: bool, x: i32, y: i32) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        AllowSetForegroundWindow, WM_CONTEXTMENU, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    };
+    const NIN_SELECT: u32 = WM_USER;
+    if icon.callback_message == 0 || icon.owner.is_invalid() {
+        return;
+    }
+    unsafe {
+        // Let the app bring its menu/window to the front.
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(icon.owner, Some(&mut pid));
+        if pid != 0 {
+            let _ = AllowSetForegroundWindow(pid);
+        }
+        let messages: &[u32] = if right {
+            &[WM_RBUTTONDOWN, WM_RBUTTONUP, WM_CONTEXTMENU]
+        } else {
+            &[WM_LBUTTONDOWN, WM_LBUTTONUP, NIN_SELECT]
+        };
+        for &m in messages {
+            let (wparam, lparam) = if icon.version >= 4 {
+                // NOTIFYICON_VERSION_4: click position in wParam,
+                // event + icon id in lParam.
+                (
+                    ((x as u16 as u32) | ((y as u16 as u32) << 16)) as usize,
+                    ((m & 0xFFFF) | ((icon.uid & 0xFFFF) << 16)) as isize,
+                )
+            } else {
+                // Older icons: icon id in wParam, event in lParam. Only
+                // version 3 understands NIN_SELECT / WM_CONTEXTMENU.
+                if icon.version < 3 && (m == WM_CONTEXTMENU || m == NIN_SELECT) {
+                    continue;
+                }
+                (icon.uid as usize, m as isize)
+            };
+            let _ = PostMessageW(icon.owner, icon.callback_message, WPARAM(wparam), LPARAM(lparam));
+        }
+    }
+}
+
+unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match msg {
+        WM_COPYDATA => {
+            let cds = lp.0 as *const COPYDATASTRUCT;
+            if !cds.is_null() && (*cds).dwData == COPYDATA_TRAY {
+                record(&*cds);
+            }
+            // Always let Explorer handle it too (icons and appbar messages).
+            return forward(hwnd, msg, wp, lp).unwrap_or(LRESULT(1));
+        }
+        WM_TIMER => {
+            match wp.0 {
+                TIMER_TOPMOST => bring_to_front(hwnd),
+                TIMER_REBROADCAST => {
+                    let _ = KillTimer(hwnd, TIMER_REBROADCAST);
+                    bring_to_front(hwnd);
+                    let msg = HOST.with(|h| h.try_borrow().ok().and_then(|g| g.as_ref().map(|x| x.taskbar_created)));
+                    if let Some(m) = msg {
+                        broadcast_taskbar_created(m);
+                    }
+                }
+                _ => {}
+            }
+            return LRESULT(0);
+        }
+        _ => {}
+    }
+    let taskbar_created = HOST.with(|h| h.try_borrow().ok().and_then(|g| g.as_ref().map(|x| (x.taskbar_created, x.last_broadcast))));
+    if let Some((tc, last)) = taskbar_created {
+        if msg == tc {
+            // Explorer restarted (not our own broadcast): its new taskbar is
+            // now in front of ours. Take the front spot back and ask apps to
+            // re-send their icons, after Explorer has settled.
+            let ours = last.map(|t| t.elapsed().as_secs_f32() < 3.0).unwrap_or(false);
+            if !ours {
+                SetTimer(hwnd, TIMER_REBROADCAST, 2000, None);
+            }
+            return LRESULT(0);
+        }
+    }
+    // Other messages apps send to the taskbar (e.g. WM_COMMAND shortcuts)
+    // go to Explorer.
+    if msg == windows::Win32::UI::WindowsAndMessaging::WM_COMMAND || (WM_USER..0x8000).contains(&msg) {
+        if let Some(r) = forward(hwnd, msg, wp, lp) {
+            return r;
+        }
+    }
+    DefWindowProcW(hwnd, msg, wp, lp)
+}
+
+fn forward(ours: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
+    let target = explorer_tray(ours)?;
+    let mut result = 0usize;
+    unsafe {
+        let ok = SendMessageTimeoutW(target, msg, wp, lp, SMTO_ABORTIFHUNG, 1000, Some(&mut result));
+        if ok.0 == 0 {
+            return None;
+        }
+    }
+    Some(LRESULT(result as isize))
+}
+
+fn record(cds: &COPYDATASTRUCT) {
+    let size = std::mem::size_of::<TrayMessage>();
+    let n = (cds.cbData as usize).min(size);
+    if cds.lpData.is_null() || n < 8 + 24 {
+        return;
+    }
+    // Copy into a zeroed, aligned struct (older apps send a shorter one).
+    let mut data: TrayMessage = unsafe { std::mem::zeroed() };
+    unsafe {
+        std::ptr::copy_nonoverlapping(cds.lpData as *const u8, &mut data as *mut TrayMessage as *mut u8, n);
+    }
+    let message = data.message;
+    let nid = data.nid;
+
+    let changed = HOST.with(|h| {
+        let Ok(mut g) = h.try_borrow_mut() else { return false };
+        let Some(host) = g.as_mut() else { return false };
+        let pos = host.icons.iter().position(|i| i.matches(&nid));
+        match message {
+            NIM_ADD | NIM_MODIFY => {
+                // A modify for an icon we never saw added is treated as an add.
+                let idx = match pos {
+                    Some(i) => i,
+                    None => {
+                        host.icons.push(TrayIcon {
+                            owner: HWND(handle(nid.hwnd)),
+                            uid: nid.uid,
+                            guid: if nid.flags & NIF_GUID != 0 { Some(nid.guid) } else { None },
+                            callback_message: 0,
+                            version: 0,
+                            icon: None,
+                            tip: String::new(),
+                            hidden: false,
+                        });
+                        host.icons.len() - 1
+                    }
+                };
+                let icon = &mut host.icons[idx];
+                if nid.hwnd != 0 {
+                    icon.owner = HWND(handle(nid.hwnd));
+                }
+                if nid.flags & NIF_MESSAGE != 0 {
+                    icon.callback_message = nid.callback_message;
+                }
+                if nid.flags & NIF_ICON != 0 {
+                    if let Some(old) = icon.icon.take() {
+                        unsafe {
+                            let _ = DestroyIcon(old);
+                        }
+                    }
+                    if nid.hicon != 0 {
+                        icon.icon = unsafe { CopyIcon(HICON(handle(nid.hicon))).ok() };
+                    }
+                }
+                if nid.flags & NIF_TIP != 0 {
+                    icon.tip = wide_to_string(&nid.tip);
+                }
+                if nid.flags & NIF_STATE != 0 && nid.state_mask & NIS_HIDDEN != 0 {
+                    icon.hidden = nid.state & NIS_HIDDEN != 0;
+                }
+                true
+            }
+            NIM_DELETE => {
+                if let Some(i) = pos {
+                    let removed = host.icons.remove(i);
+                    if let Some(icon) = removed.icon {
+                        unsafe {
+                            let _ = DestroyIcon(icon);
+                        }
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+            NIM_SETVERSION => {
+                if let Some(i) = pos {
+                    host.icons[i].version = nid.timeout_or_version;
+                }
+                false
+            }
+            _ => false,
+        }
+    });
+    if changed {
+        let cb = HOST.with(|h| h.try_borrow().ok().and_then(|g| g.as_ref().and_then(|x| x.on_change)));
+        if let Some(cb) = cb {
+            cb();
+        }
+    }
+}

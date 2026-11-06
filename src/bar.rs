@@ -2,7 +2,7 @@
 //
 // Left:   RAM usage, network connection
 // Centre: date and time
-// Right:  Bluetooth, control center, audio (later: system tray)
+// Right:  system tray, Bluetooth, control center, audio
 //
 // The dock (dock.rs) is a separate window started alongside the bar.
 //
@@ -44,6 +44,7 @@ use crate::appbar::{self, ABN_FULLSCREENAPP, ABN_POSCHANGED};
 use crate::audio::{Audio, Flow, Level};
 use crate::audio_flyout::{self, Tab, WM_AUDIO_CHANGED};
 use crate::panel::{self, Kind};
+use crate::{tray, tray_flyout};
 use crate::ui::{self, R};
 use crate::backdrop;
 use crate::config::Config;
@@ -63,6 +64,7 @@ const ICON_WIFI: &str = "\u{E701}";
 const ICON_ETHERNET: &str = "\u{E839}";
 const ICON_BLUETOOTH: &str = "\u{E702}";
 const ICON_CONTROL_CENTER: &str = "\u{E9E9}";
+const ICON_TRAY: &str = "\u{E70D}";
 
 // ---- Messages / timers ----------------------------------------------------
 const WM_APPBAR: u32 = WM_APP + 1;
@@ -104,6 +106,7 @@ struct Bar {
     audio_btn: R,
     bt_btn: R,
     cc_btn: R,
+    tray_btn: R,
     origin: (i32, i32),
 }
 
@@ -148,6 +151,9 @@ pub fn run() -> Result<()> {
         SetTimer(hwnd, TIMER_TICK, 1000, None);
         SetTimer(hwnd, TIMER_TASKBAR, 300, None);
 
+        if Config::load().tray_enabled {
+            tray::start(tray_flyout::changed);
+        }
         crate::dock::create(std::env::args().any(|a| a == "--test-open=dock"));
 
         // `--test-open=audio-devices` / `--test-open=audio-mixer`
@@ -157,6 +163,7 @@ pub fn run() -> Result<()> {
                 "--test-open=audio-mixer" => Some(1),
                 "--test-open=bluetooth" => Some(2),
                 "--test-open=control-center" => Some(3),
+                "--test-open=tray" => Some(4),
                 _ => None,
             };
             if let Some(t) = tab {
@@ -254,6 +261,7 @@ impl Bar {
             audio_btn: R::default(),
             bt_btn: R::default(),
             cc_btn: R::default(),
+            tray_btn: R::default(),
             origin: (0, 0),
         })
     }
@@ -321,6 +329,8 @@ impl Bar {
                     self.open_panel(Kind::ControlCenter, false);
                 } else if self.bt_btn.contains(x, y) {
                     self.open_panel(Kind::Bluetooth, false);
+                } else if self.tray_btn.contains(x, y) {
+                    self.open_tray(false);
                 }
                 Some(LRESULT(0))
             }
@@ -351,7 +361,8 @@ impl Bar {
                     0 => self.open_audio(Some(Tab::Devices)),
                     1 => self.open_audio(Some(Tab::Mixer)),
                     2 => self.open_panel(Kind::Bluetooth, true),
-                    _ => self.open_panel(Kind::ControlCenter, true),
+                    3 => self.open_panel(Kind::ControlCenter, true),
+                    _ => self.open_tray(true),
                 }
                 Some(LRESULT(0))
             }
@@ -430,13 +441,21 @@ impl Bar {
 
     fn open_audio(&mut self, tab: Option<Tab>) {
         panel::hide();
+        tray_flyout::hide();
         audio_flyout::toggle(self.anchor(self.audio_btn), self.hwnd, self.config.bar_opacity, tab);
     }
 
     fn open_panel(&mut self, kind: Kind, force_open: bool) {
         audio_flyout::hide();
+        tray_flyout::hide();
         let b = if kind == Kind::Bluetooth { self.bt_btn } else { self.cc_btn };
         panel::toggle(kind, self.anchor(b), self.hwnd, self.config.bar_opacity, force_open);
+    }
+
+    fn open_tray(&mut self, force_open: bool) {
+        audio_flyout::hide();
+        panel::hide();
+        tray_flyout::toggle(self.anchor(self.tray_btn), self.config.bar_opacity, force_open);
     }
 
     /// Size and place the bar across the top of the primary monitor.
@@ -554,6 +573,11 @@ impl Bar {
         let speaker = self.gfx.text(speaker, &self.fonts.icon, pill_h)?;
         let bt_icon = self.gfx.text(ICON_BLUETOOTH, &self.fonts.icon, pill_h)?;
         let cc_icon = self.gfx.text(ICON_CONTROL_CENTER, &self.fonts.icon, pill_h)?;
+        let tray_icon = if self.config.tray_enabled {
+            Some(self.gfx.text(ICON_TRAY, &self.fonts.icon, pill_h)?)
+        } else {
+            None
+        };
 
         let frame = self.gfx.begin(self.hwnd, self.width as u32, self.height as u32)?;
         let bg = Color(BG_RGB.0, BG_RGB.1, BG_RGB.2, self.config.bar_opacity as f32 / 100.0);
@@ -597,11 +621,21 @@ impl Bar {
         let bt_x = cc_x - gap - bt_w;
         pill(bt_x, &[(&bt_icon, FG)]);
         let bt_btn = R::new(bt_x, 0.0, bt_w, h);
+        let tray_btn = match &tray_icon {
+            Some(t) => {
+                let tw = t.width + 2.0 * pad;
+                let tx = bt_x - gap - tw;
+                pill(tx, &[(t, FG)]);
+                R::new(tx, 0.0, tw, h)
+            }
+            None => R::default(),
+        };
 
         let result = self.gfx.end(frame);
         self.audio_btn = audio_btn;
         self.cc_btn = cc_btn;
         self.bt_btn = bt_btn;
+        self.tray_btn = tray_btn;
         result
     }
 }

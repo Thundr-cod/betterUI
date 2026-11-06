@@ -1,4 +1,4 @@
-// App icons for the dock, loaded through the Windows shell (the same icons
+// App icons for the dock and tray, loaded through the Windows shell (the same icons
 // Explorer and the taskbar show) and converted to WIC images that Direct2D
 // can draw. Results are cached by path, including failures.
 
@@ -88,6 +88,11 @@ impl Icons {
             let _ = DeleteObject(hbmp);
             self.to_pbgra(&bitmap?.into())
         }
+    }
+
+    /// Convert an icon handle (e.g. a tray icon) without caching it.
+    pub fn for_hicon(&self, hicon: HICON) -> Option<IWICBitmapSource> {
+        self.from_hicon(hicon).ok()
     }
 
     fn from_hicon(&self, hicon: HICON) -> Result<IWICBitmapSource> {

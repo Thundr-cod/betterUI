@@ -16,8 +16,10 @@ use std::path::PathBuf;
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, TRUE};
 use windows::Win32::UI::Shell::{SHAppBarMessage, APPBARDATA};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, IsWindowVisible, ShowWindow, SW_HIDE, SW_SHOWNA,
+    EnumWindows, GetClassNameW, GetWindowThreadProcessId, IsWindowVisible, ShowWindow, SW_HIDE,
+    SW_SHOWNA,
 };
+use windows::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::appbar::{ABM_GETSTATE, ABM_SETSTATE, ABS_AUTOHIDE};
 
@@ -25,7 +27,7 @@ fn state_file() -> PathBuf {
     crate::log::data_dir().join("taskbar_state.txt")
 }
 
-/// All taskbar windows (one per monitor).
+/// All of Explorer's taskbar windows (one per monitor).
 fn taskbar_windows() -> Vec<HWND> {
     unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let list = &mut *(lparam.0 as *mut Vec<HWND>);
@@ -33,7 +35,12 @@ fn taskbar_windows() -> Vec<HWND> {
         let n = GetClassNameW(hwnd, &mut buf);
         if n > 0 {
             let name = String::from_utf16_lossy(&buf[..n as usize]);
-            if name == "Shell_TrayWnd" || name == "Shell_SecondaryTrayWnd" {
+            // Skip betterUI's own tray host window (same class name, see tray.rs).
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            if (name == "Shell_TrayWnd" || name == "Shell_SecondaryTrayWnd")
+                && pid != GetCurrentProcessId()
+            {
                 list.push(hwnd);
             }
         }
