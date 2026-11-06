@@ -93,6 +93,8 @@ None of them are in the MVP. Today only the dock slides in and out.
 
 ## Using it
 
+- **Multiple monitors:** every monitor gets its own bar. Flyouts open on the
+  monitor you clicked. The dock stays on the main monitor.
 - **Quit:** right-click the bar → *Quit betterUI*. The Windows taskbar comes back.
 - **Start with Windows:** right-click the bar → *Start with Windows*. betterUI
   then starts when you sign in (it also appears in Task Manager → Startup apps).
