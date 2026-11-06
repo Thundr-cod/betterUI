@@ -12,7 +12,7 @@ with no web view, so it starts instantly and uses a few MB of RAM.
 | 2 | Audio flyout: devices (output / input) + per-app mixer | done |
 | 3 | Bluetooth + control center (Wi-Fi, Bluetooth, brightness, volume) | done |
 | 4 | Dock (auto-hides; also hides when a window covers it) | done |
-| 5 | System tray dropdown | planned |
+| 5 | System tray dropdown | done |
 
 ## Getting it
 
@@ -25,7 +25,14 @@ No installer and no other software needed. See the
 
 Every pull request raises the version in `Cargo.toml` (CI checks this), and
 merging it publishes a release tagged `v<version>`. Releases before `v0.1.0`
-are pre-releases; `v0.1.0` marks the finished MVP.
+are pre-releases. `v0.1.0` marks the MVP once it has been tested on a real PC.
+
+Numbering rules (the last number must always count up):
+
+- **Features** take the next version: `v0.0.5`.
+- **Bug fixes** add two digits to the feature they fix: `v0.0.501`, `v0.0.502`, …
+- **The next feature after any bug fix** moves to the next hundred: `v0.0.600`
+  (its fixes are `v0.0.601`, …), because `v0.0.6` would count lower than `v0.0.502`.
 
 | Release | Contents |
 | --- | --- |
@@ -33,7 +40,8 @@ are pre-releases; `v0.1.0` marks the finished MVP.
 | v0.0.2 | Bluetooth dropdown + control center |
 | v0.0.3 | Dock |
 | v0.0.4 | Docs: future work plan |
-| v0.1.0 | System tray dropdown — MVP complete (planned) |
+| v0.0.5 | System tray dropdown (MVP feature-complete) |
+| v0.1.0 | MVP, after testing on a real PC (planned) |
 
 v0.0.1 was never published on its own (its PR merged together with v0.0.2's), so v0.0.2 is the first release.
 
@@ -66,6 +74,9 @@ These are planned for after `v0.1.0` and are **not** part of the MVP.
   middle-click for a new window, right-click to pin/unpin, close, or change
   when the dock hides. It starts with your taskbar pins; the list lives in
   `%APPDATA%\betterUI\dock_pins.txt`.
+- **System tray:** the arrow button on the bar opens your tray icons. Click
+  an icon to open its app, right-click for its menu, hover to see its
+  tooltip. Can be turned off with `tray_enabled = false` in `config.ini`.
 - Logs: `%APPDATA%\betterUI\log.txt`
 
 Don't run betterUI at the same time as Seelen UI. Both replace the taskbar and

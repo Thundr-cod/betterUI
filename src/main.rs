@@ -21,6 +21,8 @@ mod radios;
 mod render;
 mod sysinfo;
 mod taskbar;
+mod tray;
+mod tray_flyout;
 mod ui;
 
 use windows::core::w;

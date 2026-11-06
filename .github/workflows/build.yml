@@ -107,6 +107,7 @@ jobs:
             'bluetooth.png'        = '--test-open=bluetooth --demo'
             'control-center.png'   = '--test-open=control-center --demo'
             'dock.png'             = '--test-open=dock'
+            'tray.png'             = '--test-open=tray --demo'
           }
           $report = @()
           $failed = $false
