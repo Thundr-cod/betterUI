@@ -204,8 +204,11 @@ jobs:
         run: |
           if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
             choco install ffmpeg -y --no-progress | Out-Null
+            # choco's folder isn't on PATH until the next step starts
+            "C:\ProgramData\chocolatey\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+            $env:Path = "C:\ProgramData\chocolatey\bin;$env:Path"
           }
-          Get-Command ffmpeg
+          & ffmpeg -version | Select-Object -First 1
 
       - name: Record feature videos
         shell: pwsh
