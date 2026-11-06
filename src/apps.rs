@@ -312,13 +312,20 @@ pub fn any_window_overlaps(area: &RECT) -> bool {
     })
 }
 
-/// Is one of betterUI's own windows (a flyout or menu) in front?
-pub fn own_window_in_front() -> bool {
+/// Is one of betterUI's flyouts (audio, Bluetooth, control center, tray)
+/// in front? The bars and the dock themselves don't count: the bar becomes
+/// the foreground window when its right-click menu opens, and that must not
+/// keep it from hiding.
+pub fn own_flyout_in_front() -> bool {
     use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
     unsafe {
         let fg = GetForegroundWindow();
         let mut pid = 0u32;
         GetWindowThreadProcessId(fg, Some(&mut pid));
         pid == GetCurrentProcessId()
+            && matches!(
+                class_name(fg).as_str(),
+                "betterUI.AudioFlyout" | "betterUI.Panel" | "betterUI.TrayFlyout"
+            )
     }
 }

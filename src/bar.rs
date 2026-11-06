@@ -683,8 +683,8 @@ impl Bar {
 
         let want_visible = if apps::fullscreen_on(&m) {
             false
-        } else if apps::own_window_in_front() {
-            // A flyout or menu from betterUI is open: keep the bar with it.
+        } else if apps::own_flyout_in_front() {
+            // One of the bar's flyouts is open: keep the bar with it.
             visible || at_edge
         } else {
             match self.config.bar_mode {
