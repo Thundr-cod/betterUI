@@ -50,8 +50,10 @@ const MA_NOACTIVATE: isize = 3;
 const ICON: f32 = 40.0; // logical pixels
 const SLOT: f32 = 52.0;
 const PAD: f32 = 6.0;
-const SEP: f32 = 13.0;
+const SEP: f32 = 17.0; // room for the divider between pinned and other apps
 const MARGIN: f32 = 8.0; // gap between dock and screen bottom
+/// The line between pinned apps and other running apps.
+const DIVIDER: Color = Color(1.0, 1.0, 1.0, 0.35);
 
 const MENU_NEW: usize = 1;
 const MENU_PIN: usize = 2;
@@ -644,7 +646,7 @@ impl Dock {
             let item = self.items[i].clone();
             if !item.pinned && prev_pinned && i > 0 {
                 // separator between pinned and other running apps
-                frame.round_rect(x + SEP * s / 2.0 - 0.5 * s, y + 10.0 * s, 1.0 * s, (SLOT - 20.0) * s, 0.0, FAINT);
+                frame.round_rect(x + SEP * s / 2.0 - 1.0 * s, y + 8.0 * s, 2.0 * s, (SLOT - 16.0) * s, 1.0 * s, DIVIDER);
                 x += SEP * s;
             }
             prev_pinned = item.pinned;
