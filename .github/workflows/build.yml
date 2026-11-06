@@ -181,3 +181,50 @@ jobs:
             fi
           fi
           echo "Merging this PR will publish release v$new"
+
+  # Record a short video of each feature being used (scripted mouse and
+  # keyboard, demo data for hardware the CI machine doesn't have). Videos
+  # are pushed to the `ci-videos` branch.
+  feature-videos:
+    needs: build
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    concurrency:
+      group: feature-videos
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: betterui
+
+      - name: Install ffmpeg
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            choco install ffmpeg -y --no-progress | Out-Null
+          }
+          Get-Command ffmpeg
+
+      - name: Record feature videos
+        shell: pwsh
+        run: |
+          Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name EnableTransparency -Value 1 -Type DWord -ErrorAction SilentlyContinue
+          ./ci/record-features.ps1 -Exe ./betterui.exe -Out videos
+
+      - name: Publish videos to ci-videos branch
+        if: always()
+        shell: pwsh
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if (-not (Test-Path videos)) { exit 0 }
+          "commit: $env:GITHUB_SHA`nref: $env:GITHUB_HEAD_REF$env:GITHUB_REF_NAME" | Set-Content videos\info.txt
+          Set-Location videos
+          git init -q -b ci-videos
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Feature videos for $env:GITHUB_SHA"
+          git push -q --force "https://x-access-token:$env:TOKEN@github.com/$env:GITHUB_REPOSITORY.git" ci-videos

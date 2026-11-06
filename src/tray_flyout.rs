@@ -320,6 +320,11 @@ impl TrayFlyout {
         }
 
         let result = self.gfx.end(frame);
+        crate::testhooks::write(
+            "tray",
+            self.hwnd,
+            &cells.iter().enumerate().map(|(i, r)| (format!("Icon({i})"), *r)).collect::<Vec<_>>(),
+        );
         self.cells = cells;
         // Keep the bitmap cache from growing as icons change.
         if self.bitmaps.len() > 200 {
