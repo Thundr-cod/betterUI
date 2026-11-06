@@ -71,6 +71,7 @@ These are planned for after `v0.1.0` and are **not** part of the MVP.
 | **Dark or custom-colour flyouts** | The flyouts (audio, Bluetooth, control center, tray) are drawn white today. Give them their own colour setting, or a dark mode with the same tint, opacity and blur as the top bar and dock, so the whole shell matches. |
 | **Start button on the top bar** | A clickable Start button at the left end of the top bar. Today Start opens only from the Windows key. |
 | **Start button on the dock** | A button at the left end of the dock that opens the Start menu. |
+| **Drag to rearrange dock icons** | Drag a pinned icon along the dock to change its place; the new order is saved to `dock_pins.txt`. Today the order can only be changed by editing that file. |
 | **Custom app icons** | A section in betterUI's settings to upload your own icon for any app on the dock, replacing the one Windows provides. |
 | **Themes** | Selectable colour, font and shape themes for the bar, flyouts and dock, beyond the current opacity and blur settings. |
 | **betterUI settings in Windows 11 Settings** | A betterUI page reachable from the Windows Settings app. Windows has no supported way for other apps to add their own page inside Settings, so this needs research first. The likely result is a betterUI settings window designed to match Windows 11 Settings, plus an easy way to open it. |

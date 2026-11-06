@@ -33,6 +33,20 @@ jobs:
             Write-Output "::warning title=cargo build warnings::$enc"
           }
 
+      - name: Unit tests
+        shell: pwsh
+        run: |
+          cargo test --release --message-format=short 2>&1 | Tee-Object -FilePath test.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $log = (Get-Content test.log -Raw)
+            if ($null -eq $log) { $log = "" }
+            if ($log.Length -gt 60000) { $log = $log.Substring($log.Length - 60000) }
+            $enc = $log.Replace('%','%25').Replace("`r",'').Replace("`n",'%0A')
+            Write-Output "::error title=cargo test failed::$enc"
+            exit 1
+          }
+
       - uses: actions/upload-artifact@v5
         with:
           name: betterui
