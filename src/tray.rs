@@ -104,7 +104,6 @@ impl TrayIcon {
 }
 
 struct Host {
-    hwnd: HWND,
     icons: Vec<TrayIcon>,
     taskbar_created: u32,
     last_broadcast: Option<Instant>,
@@ -178,7 +177,7 @@ fn start_inner(on_change: fn()) -> Result<()> {
         )?;
         let taskbar_created = RegisterWindowMessageW(w!("TaskbarCreated"));
         HOST.with(|h| {
-            *h.borrow_mut() = Some(Host { hwnd, icons: Vec::new(), taskbar_created, last_broadcast: None, on_change: Some(on_change) })
+            *h.borrow_mut() = Some(Host { icons: Vec::new(), taskbar_created, last_broadcast: None, on_change: Some(on_change) })
         });
         bring_to_front(hwnd);
         SetTimer(hwnd, TIMER_TOPMOST, 5000, None);
