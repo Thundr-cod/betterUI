@@ -45,12 +45,31 @@ Numbering rules (the last number must always count up):
 
 v0.0.1 was never published on its own (its PR merged together with v0.0.2's), so v0.0.2 is the first release.
 
-## Future work (after the MVP)
+## Future work
+
+### Known issues from real-PC testing
+
+Found while testing v0.0.801 on a real Windows 11 PC and not fixed yet.
+
+| Issue | Notes |
+| --- | --- |
+| **Some tray icons never appear (e.g. the NVIDIA app)** | Steam and Claude now show up, but the NVIDIA app and other icons Windows keeps in its hidden-icons area don't. `tray_debug.txt` shows no message at all from any NVIDIA process, not even after betterUI asks every app to re-send its icons, so betterUI isn't filtering it out: the app never talks to betterUI's tray. Likely causes to check: the app ignores the `TaskbarCreated` broadcast, or it runs elevated, which stops Windows delivering that broadcast to it. Possible fixes: read the icons Explorer already holds, or re-ask only those apps a different way. |
+| **Hide redundant tray icons** | Explorer's own Bluetooth icon duplicates betterUI's Bluetooth button. Decide which Explorer-owned icons to hide once the full list shows up. |
+| **Dock divider looks low-res and uneven** | Better since v0.0.702 but still soft, and its thickness varies. Snap it to whole device pixels at the monitor's DPI so it's one crisp, even line. |
+| **Code signing** | The SignPath Foundation application was not approved, so builds stay unsigned and Smart App Control blocks them. Pick another way to sign the exe. |
+
+**Not yet tested on real hardware:** multiple monitors, brightness on DDC/CI
+monitors, and tray click forwarding (clicking an icon in betterUI's tray
+dropdown passes the click on to its app, e.g. right-click Steam for its menu).
+
+### New features
 
 These are planned for after `v0.1.0` and are **not** part of the MVP.
 
 | Feature | Notes |
 | --- | --- |
+| **Dark or custom-colour flyouts** | The flyouts (audio, Bluetooth, control center, tray) are drawn white today. Give them their own colour setting, or a dark mode with the same tint, opacity and blur as the top bar and dock, so the whole shell matches. |
+| **Start button on the top bar** | A clickable Start button at the left end of the top bar. Today Start opens only from the Windows key. |
 | **Start button on the dock** | A button at the left end of the dock that opens the Start menu. |
 | **Custom app icons** | A section in betterUI's settings to upload your own icon for any app on the dock, replacing the one Windows provides. |
 | **Themes** | Selectable colour, font and shape themes for the bar, flyouts and dock, beyond the current opacity and blur settings. |
@@ -134,16 +153,14 @@ cargo build --release
 
 ## Code signing policy
 
-Windows releases of betterUI are signed through the SignPath Foundation
-open-source program:
-**Free code signing provided by [SignPath.io](https://about.signpath.io),
-certificate by [SignPath Foundation](https://signpath.org).**
+*Status: builds are unsigned.* The application to the SignPath Foundation
+open-source program was not approved, and another signing route is listed
+under [Future work](#future-work). Until then, Windows Smart App Control may
+block `betterui.exe`.
 
-*Status: application pending. Until it is approved, builds are unsigned.*
-
-Only binaries built by this repository's GitHub Actions workflow from the
-source code in this repository are signed. Every signing request is approved
-by hand.
+When signing is added, only binaries built by this repository's GitHub Actions
+workflow from the source code in this repository will be signed, and every
+signing request will be approved by hand.
 
 Team roles:
 
