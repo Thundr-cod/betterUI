@@ -92,6 +92,9 @@ struct Dock {
     hovered: Option<usize>,
     slots: Vec<R>,
     animating: bool,
+    /// Running (unpinned) apps in the order they first appeared, so icons
+    /// don't swap places when you switch between windows.
+    running_order: Vec<String>,
 }
 
 /// Create the dock (if enabled in settings, or `forced` for the CI test).
@@ -171,6 +174,7 @@ fn create_inner(config: &Config, forced: bool) -> Result<()> {
             hovered: None,
             slots: Vec::new(),
             animating: false,
+            running_order: Vec::new(),
         };
         dock.refresh_items();
         dock.reposition();
@@ -289,7 +293,7 @@ impl Dock {
 
     fn refresh_items(&mut self) {
         let windows = apps::app_windows();
-        let items = apps::dock_items(&self.pins, &windows);
+        let items = self.stable_order(apps::dock_items(&self.pins, &windows));
         let fg = unsafe { GetForegroundWindow() };
         let signature: String = items
             .iter()
@@ -305,6 +309,30 @@ impl Dock {
             }
             self.invalidate();
         }
+    }
+
+    /// Windows are listed front-most first, which changes every time focus
+    /// moves. Keep pinned apps in pin order and running apps in the order
+    /// they were first seen, like the taskbar.
+    fn stable_order(&mut self, items: Vec<DockItem>) -> Vec<DockItem> {
+        fn key(i: &DockItem) -> String {
+            if !i.exe.is_empty() {
+                i.exe.clone()
+            } else {
+                format!("hwnd:{}", i.windows.first().map(|h| h.0 as isize).unwrap_or(0))
+            }
+        }
+        let (pinned, mut running): (Vec<DockItem>, Vec<DockItem>) = items.into_iter().partition(|i| i.pinned);
+        let keys: Vec<String> = running.iter().map(key).collect();
+        self.running_order.retain(|k| keys.contains(k));
+        for k in keys {
+            if !self.running_order.contains(&k) {
+                self.running_order.push(k);
+            }
+        }
+        let order = &self.running_order;
+        running.sort_by_key(|i| order.iter().position(|k| *k == key(i)).unwrap_or(usize::MAX));
+        pinned.into_iter().chain(running).collect()
     }
 
     fn layout_width(&self) -> f32 {

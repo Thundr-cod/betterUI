@@ -251,23 +251,28 @@ Run-Scenario '5-dock' {
     # Touch the bottom edge: the dock slides back up.
     Move-To 512 $bottom 600
     Start-Sleep -Seconds 1
-    $dock = Layout 'dock'
-    $key = $dock.Keys | Where-Object { $_ -match 'notepad' } | Select-Object -First 1
-    if ($key) {
-        $c = Center $dock[$key]
-        Click $c[0] $dockY             # Notepad is in front -> minimize it
+    # Read the dock's layout fresh before every click.
+    function NotepadX {
+        $dock = Layout 'dock'
+        $key = $dock.Keys | Where-Object { $_ -match 'notepad' } | Select-Object -First 1
+        if (-not $key) { Write-Warning "Notepad not found on dock: $($dock.Keys -join ', ')"; return $null }
+        return (Center $dock[$key])[0]
+    }
+    $x = NotepadX
+    if ($x) {
+        Click $x $dockY                # Notepad is in front -> minimize it
         Start-Sleep -Seconds 2
-        Click $c[0] $dockY             # restore it
+        $x = NotepadX
+        Click $x $dockY                # restore it
         Start-Sleep -Seconds 1
         Move-To 512 300                # move away: dock hides again
         Start-Sleep -Seconds 2
         Move-To 512 $bottom 600        # reveal
         Start-Sleep -Seconds 1
-        Click $c[0] $dockY -Right      # New window / Pin to dock / Close window
+        $x = NotepadX
+        Click $x $dockY -Right         # New window / Pin to dock / Close window
         Keys '{DOWN}'; Keys '{DOWN}'; Keys '{ENTER}'   # Pin to dock
         Start-Sleep -Seconds 2
-    } else {
-        Write-Warning "Notepad not found on dock: $($dock.Keys -join ', ')"
     }
     Stop-Process -Id $np.Id -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
