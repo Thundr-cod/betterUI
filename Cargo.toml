@@ -1,6 +1,6 @@
 [package]
 name = "betterui"
-version = "0.0.503"
+version = "0.0.600"
 edition = "2021"
 description = "A lightweight native desktop shell for Windows 11 (top bar + dock)"
 license = "GPL-3.0-only"
