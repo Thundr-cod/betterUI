@@ -18,7 +18,8 @@ with no web view, so it starts instantly and uses a few MB of RAM.
 
 Download `betterui.exe` from the newest release on the
 [Releases page](https://github.com/Thundr-cod/betterUI/releases) and run it.
-No installer and no other software needed.
+No installer and no other software needed. See the
+[Code signing policy](#code-signing-policy).
 
 ## Versions
 
@@ -31,7 +32,22 @@ are pre-releases; `v0.1.0` marks the finished MVP.
 | v0.0.1 | Top bar, taskbar replacement, opacity/blur, audio flyout |
 | v0.0.2 | Bluetooth dropdown + control center |
 | v0.0.3 | Dock |
-| v0.1.0 | System tray dropdown — MVP complete (planned) | See the [Code signing policy](#code-signing-policy).
+| v0.0.4 | Docs: future work plan |
+| v0.1.0 | System tray dropdown — MVP complete (planned) |
+
+v0.0.1 was never published on its own (its PR merged together with v0.0.2's), so v0.0.2 is the first release.
+
+## Future work (after the MVP)
+
+These are planned for after `v0.1.0` and are **not** part of the MVP.
+
+| Feature | Notes |
+| --- | --- |
+| **Start button on the dock** | A button at the left end of the dock that opens the Start menu. |
+| **Custom app icons** | A section in betterUI's settings to upload your own icon for any app on the dock, replacing the one Windows provides. |
+| **Themes** | Selectable colour, font and shape themes for the bar, flyouts and dock, beyond the current opacity and blur settings. |
+| **betterUI settings in Windows 11 Settings** | A betterUI page reachable from the Windows Settings app. Windows has no supported way for other apps to add their own page inside Settings, so this needs research first. The likely result is a betterUI settings window designed to match Windows 11 Settings, plus an easy way to open it. |
+| **Square or rounded windows toggle** | A setting to choose square or rounded corners for betterUI's own flyouts and dock. |
 
 ## Using it
 
