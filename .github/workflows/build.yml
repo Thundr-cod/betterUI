@@ -121,6 +121,7 @@ jobs:
             'control-center.png'   = '--test-open=control-center --demo'
             'dock.png'             = '--test-open=dock'
             'tray.png'             = '--test-open=tray --demo'
+            'rebuilt-bars.png'     = '--test-rebuild'
           }
           $report = @()
           $failed = $false

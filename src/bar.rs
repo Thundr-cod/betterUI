@@ -4,12 +4,14 @@
 // Centre: date and time
 // Right:  system tray, Bluetooth, control center, audio
 //
-// The dock (dock.rs) is a separate window started alongside the bar.
+// There is one bar per monitor; they're rebuilt when monitors are added,
+// removed or rearranged. The dock (dock.rs) is a separate window started
+// alongside the bars, on the main monitor.
 //
 // The bar only repaints when something it shows has changed (at most once a
 // second), so it uses almost no CPU while idle.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use windows::core::{w, Error, Result};
 use windows::Win32::Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM};
@@ -19,16 +21,16 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, GetMonitorInfoW, InvalidateRect, MonitorFromPoint, ScreenToClient,
-    MONITORINFO,
-    MONITOR_DEFAULTTOPRIMARY, PAINTSTRUCT,
+    BeginPaint, EndPaint, EnumDisplayMonitors, GetMonitorInfoW, InvalidateRect, MonitorFromRect,
+    ScreenToClient, HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::SystemInformation::GetLocalTime;
 use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
+    DispatchMessageW, KillTimer,
     GetCursorPos, GetMessageW, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassW,
     RegisterWindowMessageW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
     TrackPopupMenu, TranslateMessage, HWND_TOPMOST, IDC_ARROW, MF_CHECKED, MF_POPUP,
@@ -70,6 +72,7 @@ const ICON_TRAY: &str = "\u{E70D}";
 const WM_APPBAR: u32 = WM_APP + 1;
 const TIMER_TICK: usize = 1; // 1 s: clock + system info
 const TIMER_TASKBAR: usize = 2; // keep the native taskbar hidden
+const TIMER_REBUILD: usize = 3; // monitors changed (debounced)
 const MENU_QUIT: usize = 1;
 const MENU_BLUR: usize = 2;
 const MENU_AUTOSTART: usize = 3;
@@ -78,9 +81,44 @@ const OPACITY_CHOICES: [u32; 9] = [100, 90, 80, 70, 60, 50, 40, 30, 20];
 const MA_NOACTIVATE: isize = 3;
 // Used by the CI screenshot test: open a flyout right after start-up.
 const WM_TEST_OPEN: u32 = WM_APP + 3;
+/// Settings changed from one bar's menu: every bar reloads them.
+const WM_CONFIG_CHANGED: u32 = WM_APP + 4;
+const MONITORINFOF_PRIMARY: u32 = 1;
 
 thread_local! {
-    static BAR: RefCell<Option<Bar>> = const { RefCell::new(None) };
+    /// One bar per monitor; the main monitor's bar is first.
+    static BARS: RefCell<Vec<Bar>> = const { RefCell::new(Vec::new()) };
+    /// Window handles of all bars, readable while BARS is busy.
+    static BAR_HWNDS: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) };
+    /// Set when monitors changed; the bars are rebuilt from the message loop.
+    static REBUILD: Cell<bool> = const { Cell::new(false) };
+    /// Replace the bars even if the monitors look the same (CI test).
+    static FORCE_REBUILD: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A monitor: its full rectangle and whether it's the main one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Monitor {
+    rect: RECT,
+    primary: bool,
+}
+
+fn monitors() -> Vec<Monitor> {
+    unsafe extern "system" fn collect(hmon: HMONITOR, _: HDC, _: *mut RECT, lparam: LPARAM) -> BOOL {
+        let list = &mut *(lparam.0 as *mut Vec<Monitor>);
+        let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if GetMonitorInfoW(hmon, &mut mi).as_bool() {
+            list.push(Monitor { rect: mi.rcMonitor, primary: mi.dwFlags & MONITORINFOF_PRIMARY != 0 });
+        }
+        TRUE
+    }
+    let mut list: Vec<Monitor> = Vec::new();
+    unsafe {
+        let _ = EnumDisplayMonitors(None, None, Some(collect), LPARAM(&mut list as *mut Vec<Monitor> as isize));
+    }
+    // Main monitor first, then left to right.
+    list.sort_by_key(|m| (!m.primary, m.rect.left, m.rect.top));
+    list
 }
 
 struct Formats {
@@ -91,6 +129,7 @@ struct Formats {
 
 struct Bar {
     hwnd: HWND,
+    monitor: Monitor,
     config: Config,
     gfx: Gfx,
     fonts: Formats,
@@ -125,13 +164,118 @@ pub fn run() -> Result<()> {
         if RegisterClassW(&wc) == 0 {
             return Err(Error::from_win32());
         }
+        rebuild_bars(true);
+
+        if Config::load().tray_enabled {
+            tray::start(tray_flyout::changed);
+        }
+        crate::dock::create(std::env::args().any(|a| a == "--test-open=dock"));
+
+        // `--test-open=...`: open a flyout from the main bar (CI screenshots).
+        let main_bar = BAR_HWNDS.with(|h| h.borrow().first().copied());
+        for arg in std::env::args() {
+            let tab = match arg.as_str() {
+                "--test-open=audio-devices" => Some(0),
+                "--test-open=audio-mixer" => Some(1),
+                "--test-open=bluetooth" => Some(2),
+                "--test-open=control-center" => Some(3),
+                "--test-open=tray" => Some(4),
+                "--test-rebuild" => Some(9),
+                _ => None,
+            };
+            if let (Some(t), Some(h)) = (tab, main_bar) {
+                let _ = PostMessageW(h, WM_TEST_OPEN, WPARAM(t), LPARAM(0));
+            }
+        }
+
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+            // Rebuild here, outside any window's message handler.
+            if REBUILD.with(|r| r.replace(false)) {
+                rebuild_bars(FORCE_REBUILD.with(|f| f.replace(false)));
+            }
+        }
+
+        // Quitting: remove every bar (each unregisters its screen space).
+        let bars: Vec<Bar> = BARS.with(|b| std::mem::take(&mut *b.borrow_mut()));
+        for bar in bars {
+            let _ = DestroyWindow(bar.hwnd);
+        }
+    }
+    Ok(())
+}
+
+/// Make sure there's exactly one bar per monitor. If the set of monitors is
+/// unchanged, existing bars are just re-measured (resolution or scaling
+/// changes); otherwise all bars are replaced.
+fn rebuild_bars(first: bool) {
+    let wanted = monitors();
+    let current: Vec<Monitor> = BARS.with(|b| b.borrow().iter().map(|bar| bar.monitor).collect());
+    if !first && current == wanted {
+        BARS.with(|b| {
+            for bar in b.borrow_mut().iter_mut() {
+                bar.reposition();
+            }
+        });
+        return;
+    }
+    log::write(&format!("monitors: {} -> {}", current.len(), wanted.len()));
+
+    // Take the old bars out first: destroying a window sends it messages,
+    // which must not find the list borrowed.
+    let old: Vec<Bar> = BARS.with(|b| std::mem::take(&mut *b.borrow_mut()));
+    for bar in old {
+        unsafe {
+            let _ = DestroyWindow(bar.hwnd);
+        }
+    }
+    let mut new_bars = Vec::new();
+    for m in wanted {
+        match create_bar(m) {
+            Ok(bar) => new_bars.push(bar),
+            Err(e) => log::write(&format!("could not create bar for {:?}: {e:?}", m.rect)),
+        }
+    }
+    let hwnds: Vec<HWND> = new_bars.iter().map(|b| b.hwnd).collect();
+    BARS.with(|b| *b.borrow_mut() = new_bars);
+    BAR_HWNDS.with(|h| *h.borrow_mut() = hwnds.clone());
+    for (i, h) in hwnds.iter().enumerate() {
+        unsafe {
+            let _ = ShowWindow(*h, SW_SHOWNA);
+            SetTimer(*h, TIMER_TICK, 1000, None);
+            if i == 0 {
+                SetTimer(*h, TIMER_TASKBAR, 300, None);
+            }
+        }
+    }
+    if first {
+        taskbar::hide();
+    }
+}
+
+/// Tell every bar to reload the settings (they're changed from one bar).
+fn notify_config_changed() {
+    BAR_HWNDS.with(|h| {
+        for hwnd in h.borrow().iter() {
+            unsafe {
+                let _ = PostMessageW(*hwnd, WM_CONFIG_CHANGED, WPARAM(0), LPARAM(0));
+            }
+        }
+    });
+}
+
+fn create_bar(monitor: Monitor) -> Result<Bar> {
+    unsafe {
+        let hinstance: HINSTANCE = GetModuleHandleW(None)?.into();
         let hwnd = CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
-            class,
+            w!("betterUI.TopBar"),
             w!("betterUI"),
             WS_POPUP,
-            0,
-            0,
+            monitor.rect.left,
+            monitor.rect.top,
             100,
             32,
             None,
@@ -140,45 +284,12 @@ pub fn run() -> Result<()> {
             None,
         )?;
         style_window(hwnd);
-
-        let mut bar = Bar::new(hwnd)?;
+        let mut bar = Bar::new(hwnd, monitor)?;
         backdrop::set_blur(hwnd, bar.config.bar_blur);
-        taskbar::hide();
         appbar::register(hwnd, WM_APPBAR);
         bar.reposition();
-        BAR.with(|b| *b.borrow_mut() = Some(bar));
-
-        let _ = ShowWindow(hwnd, SW_SHOWNA);
-        SetTimer(hwnd, TIMER_TICK, 1000, None);
-        SetTimer(hwnd, TIMER_TASKBAR, 300, None);
-
-        if Config::load().tray_enabled {
-            tray::start(tray_flyout::changed);
-        }
-        crate::dock::create(std::env::args().any(|a| a == "--test-open=dock"));
-
-        // `--test-open=audio-devices` / `--test-open=audio-mixer`
-        for arg in std::env::args() {
-            let tab = match arg.as_str() {
-                "--test-open=audio-devices" => Some(0),
-                "--test-open=audio-mixer" => Some(1),
-                "--test-open=bluetooth" => Some(2),
-                "--test-open=control-center" => Some(3),
-                "--test-open=tray" => Some(4),
-                _ => None,
-            };
-            if let Some(t) = tab {
-                let _ = PostMessageW(hwnd, WM_TEST_OPEN, WPARAM(t), LPARAM(0));
-            }
-        }
-
-        let mut msg = MSG::default();
-        while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
+        Ok(bar)
     }
-    Ok(())
 }
 
 /// Dark mode, square corners, and per-pixel transparency (the blur itself
@@ -213,11 +324,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     // These must work even if the bar state is busy, so they don't touch it.
     match msg {
         WM_DESTROY => {
+            // One bar going away (monitor removed, or quitting): give its
+            // screen space back. Quitting itself is PostQuitMessage below.
             appbar::unregister(hwnd);
-            taskbar::restore();
-            PostQuitMessage(0);
             return LRESULT(0);
         }
+        WM_CLOSE => return LRESULT(0), // bars only close when betterUI quits
         WM_ENDSESSION => {
             if wp.0 != 0 {
                 appbar::unregister(hwnd);
@@ -229,15 +341,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_ERASEBKGND => return LRESULT(1),
         _ => {}
     }
-    let handled = BAR.with(|cell| match cell.try_borrow_mut() {
-        Ok(mut guard) => guard.as_mut().and_then(|bar| bar.handle(msg, wp, lp)),
+    let handled = BARS.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut bars) => bars.iter_mut().find(|b| b.hwnd == hwnd).and_then(|bar| bar.handle(msg, wp, lp)),
         Err(_) => None, // re-entrant call while we're busy: use the default
     });
     handled.unwrap_or_else(|| DefWindowProcW(hwnd, msg, wp, lp))
 }
 
 impl Bar {
-    fn new(hwnd: HWND) -> Result<Self> {
+    fn new(hwnd: HWND, monitor: Monitor) -> Result<Self> {
         let gfx = Gfx::new()?;
         let fonts = make_formats(&gfx, 1.0)?;
         let audio = Audio::new()
@@ -246,6 +358,7 @@ impl Bar {
         let volume = audio.as_ref().and_then(|a| a.level(Flow::Output));
         Ok(Self {
             hwnd,
+            monitor,
             config: Config::load(),
             gfx,
             fonts,
@@ -290,6 +403,10 @@ impl Bar {
                 match wp.0 {
                     TIMER_TICK => self.tick(),
                     TIMER_TASKBAR => taskbar::rehide_if_visible(),
+                    TIMER_REBUILD => unsafe {
+                        let _ = KillTimer(self.hwnd, TIMER_REBUILD);
+                        REBUILD.with(|r| r.set(true));
+                    },
                     _ => {}
                 }
                 Some(LRESULT(0))
@@ -305,8 +422,24 @@ impl Bar {
                 }
                 Some(LRESULT(0))
             }
-            WM_DPICHANGED | WM_DISPLAYCHANGE => {
+            WM_DPICHANGED => {
                 self.reposition();
+                Some(LRESULT(0))
+            }
+            WM_DISPLAYCHANGE => {
+                // Monitors were added, removed or changed. Wait until things
+                // settle (several of these arrive at once), then rebuild.
+                unsafe {
+                    SetTimer(self.hwnd, TIMER_REBUILD, 800, None);
+                }
+                Some(LRESULT(0))
+            }
+            WM_CONFIG_CHANGED => {
+                self.config = Config::load();
+                backdrop::set_blur(self.hwnd, self.config.bar_blur);
+                unsafe {
+                    let _ = InvalidateRect(self.hwnd, None, false);
+                }
                 Some(LRESULT(0))
             }
             WM_ACTIVATE => {
@@ -363,13 +496,20 @@ impl Bar {
                     1 => self.open_audio(Some(Tab::Mixer)),
                     2 => self.open_panel(Kind::Bluetooth, true),
                     3 => self.open_panel(Kind::ControlCenter, true),
+                    9 => unsafe {
+                        // Same path as a monitor being plugged in/out, after 2 s.
+                        FORCE_REBUILD.with(|f| f.set(true));
+                        SetTimer(self.hwnd, TIMER_REBUILD, 2000, None);
+                    },
                     _ => self.open_tray(true),
                 }
                 Some(LRESULT(0))
             }
             m if m != 0 && m == self.taskbar_created => {
                 // Explorer restarted: it re-created the taskbar and forgot us.
-                taskbar::hide();
+                if self.monitor.primary {
+                    taskbar::hide();
+                }
                 appbar::register(self.hwnd, WM_APPBAR);
                 self.reposition();
                 Some(LRESULT(0))
@@ -459,15 +599,16 @@ impl Bar {
         tray_flyout::toggle(self.anchor(self.tray_btn), self.config.bar_opacity, force_open);
     }
 
-    /// Size and place the bar across the top of the primary monitor.
+    /// Size and place the bar across the top of its monitor.
     fn reposition(&mut self) {
         unsafe {
-            let hmon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+            let hmon = MonitorFromRect(&self.monitor.rect, MONITOR_DEFAULTTONEAREST);
             let mut mi = MONITORINFO {
                 cbSize: std::mem::size_of::<MONITORINFO>() as u32,
                 ..Default::default()
             };
             let _ = GetMonitorInfoW(hmon, &mut mi);
+            self.monitor.rect = mi.rcMonitor;
 
             let (mut dx, mut dy) = (96u32, 96u32);
             let _ = GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
@@ -530,17 +671,19 @@ impl Bar {
             let _ = DestroyMenu(menu); // also destroys the submenu
             let cmd = cmd.0 as usize;
             if cmd == MENU_QUIT {
-                let _ = PostMessageW(self.hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+                PostQuitMessage(0);
             } else if cmd == MENU_AUTOSTART {
                 crate::autostart::set_enabled(!crate::autostart::is_enabled());
             } else if cmd == MENU_BLUR {
                 let blur = !self.config.bar_blur;
                 self.config = Config::update(|c| c.bar_blur = blur);
+                notify_config_changed();
                 backdrop::set_blur(self.hwnd, self.config.bar_blur);
                 let _ = InvalidateRect(self.hwnd, None, false);
             } else if cmd > MENU_OPACITY_BASE && cmd <= MENU_OPACITY_BASE + 100 {
                 let pct = (cmd - MENU_OPACITY_BASE) as u32;
                 self.config = Config::update(|c| c.bar_opacity = pct);
+                notify_config_changed();
                 let _ = InvalidateRect(self.hwnd, None, false);
             }
         }
@@ -641,8 +784,9 @@ impl Bar {
         self.cc_btn = cc_btn;
         self.bt_btn = bt_btn;
         self.tray_btn = tray_btn;
+        let hook_name = if self.monitor.primary { "bar".to_string() } else { format!("bar_{}", self.monitor.rect.left) };
         crate::testhooks::write(
-            "bar",
+            &hook_name,
             self.hwnd,
             &[
                 ("Tray".to_string(), tray_btn),
