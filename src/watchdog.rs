@@ -49,7 +49,7 @@ pub fn watch(pid: u32) {
         return;
     }
     crate::log::write("betterUI ended without putting the taskbar back (End task or crash); the watchdog restored it");
-    crate::taskbar::restore();
+    crate::taskbar::restore_and_settle();
 }
 
 fn another_instance_running() -> bool {

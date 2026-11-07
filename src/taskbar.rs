@@ -113,11 +113,49 @@ pub fn hidden_by_us() -> bool {
 
 /// Put the taskbar back exactly as it was. Safe to call repeatedly.
 pub fn restore() {
+    restore_state();
+}
+
+/// Restore, then keep checking for a few seconds and put it back again if
+/// Explorer hides it. Quitting with the Start menu open left the taskbar
+/// hidden: Start closing a moment later made Explorer re-apply the hidden
+/// state betterUI had set. Used when betterUI quits and by the watchdog.
+pub fn restore_and_settle() {
+    let original = restore_state();
+    let mut reapplied = false;
+    for _ in 0..15 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if hidden_by_us() {
+            // A new betterUI has started and hidden the taskbar again.
+            return;
+        }
+        for hwnd in taskbar_windows() {
+            unsafe {
+                if !IsWindowVisible(hwnd).as_bool() {
+                    let _ = ShowWindow(hwnd, SW_SHOWNA);
+                    reapplied = true;
+                }
+            }
+        }
+        if let Some(original) = original {
+            if get_state() != original {
+                set_state(original);
+                reapplied = true;
+            }
+        }
+    }
+    if reapplied {
+        crate::log::write("Explorer hid the taskbar again after it was restored; put it back");
+    }
+}
+
+/// Returns the original auto-hide setting, if one was saved.
+fn restore_state() -> Option<u32> {
     let path = state_file();
-    if let Some(original) = fs::read_to_string(&path)
+    let original = fs::read_to_string(&path)
         .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok())
-    {
+        .and_then(|s| s.trim().parse::<u32>().ok());
+    if let Some(original) = original {
         set_state(original);
     }
     for hwnd in taskbar_windows() {
@@ -126,4 +164,5 @@ pub fn restore() {
         }
     }
     let _ = fs::remove_file(&path);
+    original
 }

@@ -68,7 +68,7 @@ fn main() {
     }
 
     // Only one copy may run at a time.
-    let _mutex = unsafe { CreateMutexW(None, false, w!("Local\\betterUI.singleton")) };
+    let mutex = unsafe { CreateMutexW(None, false, w!("Local\\betterUI.singleton")) };
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
         return;
     }
@@ -93,8 +93,14 @@ fn main() {
         log::write(&format!("fatal error: {e:?}"));
     }
 
-    // Always leave the desktop the way we found it.
-    taskbar::restore();
+    // Always leave the desktop the way we found it. Let a new betterUI
+    // start while the restore settles (it takes a few seconds).
+    if let Ok(m) = mutex {
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(m);
+        }
+    }
+    taskbar::restore_and_settle();
     log::write("betterUI exited");
 }
 
