@@ -16,6 +16,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use windows::core::*;
+use windows::Win32::Foundation::S_OK;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED,
 };
