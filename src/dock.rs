@@ -29,7 +29,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TrackPopupMenu, HWND_TOPMOST,
     IDC_ARROW, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SWP_NOACTIVATE, SW_HIDE,
     SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    WM_CLOSE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONUP, WM_MBUTTONUP,
+    WM_APP, WM_CLOSE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONUP, WM_MBUTTONUP,
     WM_MOUSEACTIVATE, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
@@ -43,6 +43,7 @@ use crate::{log, popup};
 
 const TIMER_POLL: usize = 1; // 100 ms: mouse, hover, visibility
 const TIMER_ANIM: usize = 2; // ~60 fps while sliding in or out
+const WM_ICON_READY: u32 = WM_APP + 0x31; // the icon loader finished one
 const POLL_MS: u32 = 100;
 const HIDE_DELAY_TICKS: u32 = 4; // wait 400 ms before hiding
 const MA_NOACTIVATE: isize = 3;
@@ -76,6 +77,13 @@ struct Dock {
     /// instead of never (a Store app's content attaches after its window
     /// opens, so the first lookup can miss).
     icon_misses: HashMap<String, std::time::Instant>,
+    /// Loads icons off this thread (icon_loader.rs).
+    loader: Option<crate::icon_loader::Loader>,
+    /// Icons asked for and not back yet.
+    icons_pending: std::collections::HashSet<String>,
+    /// Loaded icons' pixels, kept so bitmaps can be remade cheaply when the
+    /// render target is recreated.
+    icon_pixels: HashMap<String, crate::icon_loader::Pixels>,
     bitmap_generation: u64,
     pins: Vec<Pin>,
     items: Vec<DockItem>,
@@ -159,6 +167,9 @@ fn create_inner(config: &Config, forced: bool) -> Result<()> {
             icons: Icons::new().map_err(|e| log::write(&format!("icons unavailable: {e:?}"))).ok(),
             bitmaps: HashMap::new(),
             icon_misses: HashMap::new(),
+            loader: None,
+            icons_pending: std::collections::HashSet::new(),
+            icon_pixels: HashMap::new(),
             bitmap_generation: 0,
             pins: apps::load_pins(),
             items: Vec::new(),
@@ -256,6 +267,10 @@ impl Dock {
                     TIMER_ANIM => self.animate(),
                     _ => {}
                 }
+                Some(LRESULT(0))
+            }
+            WM_ICON_READY => {
+                self.icons_ready();
                 Some(LRESULT(0))
             }
             WM_DISPLAYCHANGE | WM_DPICHANGED => {
@@ -642,8 +657,11 @@ impl Dock {
             let iy = (slot.y + 3.0 * s).round();
             let dim = if item.windows.is_empty() { 0.9 } else { 1.0 };
             match self.icon_for(&item, icon_px as i32, &frame) {
-                Some(bmp) => frame.draw_icon(&bmp, ix, iy, icon_px, dim),
-                None => {
+                IconState::Ready(bmp) => frame.draw_icon(&bmp, ix, iy, icon_px, dim),
+                // Still loading (usually a few milliseconds): leave the slot
+                // empty rather than flash a letter.
+                IconState::Loading => {}
+                IconState::Missing => {
                     // No icon available: a tile with the app's first letter.
                     frame.round_rect(ix, iy, icon_px, icon_px, 9.0 * s, Color(1.0, 1.0, 1.0, 0.14));
                     let letter: String = item.name.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
@@ -666,35 +684,82 @@ impl Dock {
         result
     }
 
-    fn icon_for(&mut self, item: &DockItem, size: i32, frame: &crate::render::Frame) -> Option<ID2D1Bitmap> {
-        let key = match (&item.launch, item.windows.first()) {
-            (Some(path), _) => path.to_lowercase(),
-            (None, Some(h)) => format!("hwnd:{}", h.0 as isize),
-            (None, None) => return None,
+    fn icon_for(&mut self, item: &DockItem, size: i32, frame: &crate::render::Frame) -> IconState {
+        use crate::icon_loader::{Loader, Request, Source};
+        let (base, source) = match (&item.launch, item.windows.first()) {
+            (Some(path), _) => (path.to_lowercase(), Source::Path(path.clone())),
+            (None, Some(h)) => (format!("hwnd:{}", h.0 as isize), Source::Window(h.0 as isize)),
+            (None, None) => return IconState::Missing,
         };
-        if let Some(cached) = self.bitmaps.get(&key) {
-            return cached.clone();
+        let key = format!("{size}|{base}");
+        if let Some(Some(bmp)) = self.bitmaps.get(&key) {
+            return IconState::Ready(bmp.clone());
+        }
+        if let Some(pixels) = self.icon_pixels.get(&key) {
+            let bmp = self.icons.as_ref().and_then(|i| i.from_pixels(pixels)).and_then(|src| frame.bitmap(&src).ok());
+            if let Some(bmp) = bmp {
+                self.bitmaps.insert(key, Some(bmp.clone()));
+                return IconState::Ready(bmp);
+            }
+        }
+        if self.icons_pending.contains(&key) {
+            return IconState::Loading;
         }
         if let Some(missed) = self.icon_misses.get(&key) {
             if missed.elapsed() < std::time::Duration::from_secs(3) {
-                return None;
+                return IconState::Missing;
             }
         }
-        let icons = self.icons.as_mut()?;
-        let source = match (&item.launch, item.windows.first()) {
-            (Some(path), _) => icons.for_path(path, size),
-            (None, Some(h)) => icons.for_window(*h, &key, size),
-            _ => None,
-        };
-        let bmp = source.and_then(|src| frame.bitmap(&src).ok());
-        if bmp.is_some() {
-            self.icon_misses.remove(&key);
-            self.bitmaps.insert(key, bmp.clone());
-        } else {
-            self.icon_misses.insert(key, std::time::Instant::now());
+        if self.loader.is_none() {
+            self.loader = Some(Loader::start(self.hwnd, WM_ICON_READY));
         }
-        bmp
+        if let Some(loader) = &self.loader {
+            self.icons_pending.insert(key.clone());
+            loader.request(Request { key, source, size });
+        }
+        IconState::Loading
     }
+
+    /// Icons the loader finished: keep their pixels (or note the miss, to
+    /// retry in 3 s) and redraw.
+    fn icons_ready(&mut self) {
+        let done = match &self.loader {
+            Some(loader) => loader.take_done(),
+            None => return,
+        };
+        if done.is_empty() {
+            return;
+        }
+        for loaded in done {
+            self.icons_pending.remove(&loaded.key);
+            match loaded.pixels {
+                Some(pixels) => {
+                    self.icon_misses.remove(&loaded.key);
+                    self.icon_pixels.insert(loaded.key, pixels);
+                }
+                None => {
+                    self.icon_misses.insert(loaded.key, std::time::Instant::now());
+                }
+            }
+        }
+        // Forget icons of windows that have closed.
+        if self.icon_pixels.len() > 64 {
+            let live: std::collections::HashSet<String> = self
+                .items
+                .iter()
+                .flat_map(|i| i.windows.iter().map(|h| format!("hwnd:{}", h.0 as isize)).chain(i.launch.iter().map(|p| p.to_lowercase())))
+                .collect();
+            self.icon_pixels.retain(|k, _| k.split_once('|').map(|(_, b)| live.contains(b)).unwrap_or(false));
+            self.bitmaps.retain(|k, _| k.split_once('|').map(|(_, b)| live.contains(b)).unwrap_or(false));
+        }
+        self.invalidate();
+    }
+}
+
+enum IconState {
+    Ready(ID2D1Bitmap),
+    Loading,
+    Missing,
 }
 
 unsafe fn activate(hwnd: HWND) {

@@ -34,6 +34,17 @@ impl Icons {
         Ok(Self { wic, cache: HashMap::new(), logged_misses: std::collections::HashSet::new() })
     }
 
+    /// A bitmap from pixels the icon loader produced on its thread.
+    pub fn from_pixels(&self, p: &crate::icon_loader::Pixels) -> Option<IWICBitmapSource> {
+        unsafe {
+            let bitmap = self
+                .wic
+                .CreateBitmapFromMemory(p.width, p.height, &GUID_WICPixelFormat32bppPBGRA, p.width * 4, &p.data)
+                .ok()?;
+            bitmap.cast().ok()
+        }
+    }
+
     /// Icon for a file (exe or shortcut), `size` pixels square.
     pub fn for_path(&mut self, path: &str, size: i32) -> Option<IWICBitmapSource> {
         let key = format!("{size}|{}", path.to_lowercase());

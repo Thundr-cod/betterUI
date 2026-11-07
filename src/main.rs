@@ -12,6 +12,7 @@ mod brightness;
 mod bar;
 mod config;
 mod dock;
+mod icon_loader;
 mod icons;
 mod log;
 mod panel;
