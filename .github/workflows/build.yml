@@ -102,6 +102,8 @@ jobs:
         run: |
           $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
           # An old-style Run key entry should be replaced by the sign-in task.
+          # (The Run key doesn't exist on a fresh runner, so create it first.)
+          if (-not (Test-Path $key)) { New-Item -Path $key | Out-Null }
           New-ItemProperty $key -Name betterUI -Value '"C:\old\betterui.exe"' -PropertyType String -Force | Out-Null
           Start-Process .\betterui.exe -ArgumentList '--start-with-windows=on' -Wait
           $xml = schtasks /Query /TN betterUI /XML 2>&1 | Out-String
