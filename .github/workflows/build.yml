@@ -178,6 +178,23 @@ jobs:
             exit 1
           }
 
+      - name: Taskbar comes back after End task
+        shell: pwsh
+        run: |
+          $state = "$env:APPDATA\betterUI\taskbar_state.txt"
+          $proc = Start-Process .\betterui.exe -ArgumentList '--demo' -PassThru
+          Start-Sleep -Seconds 6
+          if (-not (Test-Path $state)) { Write-Output "::error::betterUI didn't hide the taskbar (no taskbar_state.txt)"; exit 1 }
+          # End task = the process is killed outright, with no chance to clean up.
+          Stop-Process -Id $proc.Id -Force
+          Start-Sleep -Seconds 3
+          Get-Content "$env:APPDATA\betterUI\log.txt" -Tail 5
+          if (Test-Path $state) { Write-Output "::error::the taskbar was not restored after betterUI was killed"; exit 1 }
+          if (-not (Select-String -Path "$env:APPDATA\betterUI\log.txt" -Pattern 'watchdog restored' -Quiet)) { Write-Output "::error::no watchdog line in log.txt"; exit 1 }
+          $left = Get-Process betterui -ErrorAction SilentlyContinue
+          if ($left) { Write-Output "::error::betterui processes left running: $($left.Id -join ', ')"; exit 1 }
+          Write-Output "watchdog restored the taskbar and exited"
+
       - name: Publish screenshot to ci-screenshots branch
         if: always()
         shell: pwsh

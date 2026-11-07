@@ -105,6 +105,12 @@ pub fn rehide_if_visible() {
     }
 }
 
+/// Is the taskbar currently hidden by betterUI (its original setting saved
+/// and not yet restored)?
+pub fn hidden_by_us() -> bool {
+    state_file().exists()
+}
+
 /// Put the taskbar back exactly as it was. Safe to call repeatedly.
 pub fn restore() {
     let path = state_file();

@@ -25,6 +25,7 @@ mod taskbar;
 mod tray;
 mod tray_flyout;
 mod ui;
+mod watchdog;
 
 use windows::core::w;
 use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
@@ -47,6 +48,17 @@ fn main() {
 
     if args.iter().any(|a| a == "--restore-taskbar") {
         taskbar::restore();
+        return;
+    }
+
+    // The watchdog that restores the taskbar if betterUI is killed
+    // (watchdog.rs), and the short-lived process that starts it.
+    if let Some(pid) = args.iter().find_map(|a| a.strip_prefix("--watchdog-start=")).and_then(|p| p.parse().ok()) {
+        watchdog::start_detached(pid);
+        return;
+    }
+    if let Some(pid) = args.iter().find_map(|a| a.strip_prefix("--watchdog=")).and_then(|p| p.parse().ok()) {
+        watchdog::watch(pid);
         return;
     }
 
@@ -73,6 +85,8 @@ fn main() {
     }
 
     log::write("betterUI starting");
+    watchdog::start();
+    log_memory_use();
     wait_for_explorer_taskbar();
     autostart::refresh_path();
     if let Err(e) = bar::run() {
@@ -82,6 +96,35 @@ fn main() {
     // Always leave the desktop the way we found it.
     taskbar::restore();
     log::write("betterUI exited");
+}
+
+/// Note betterUI's memory use in log.txt a minute after starting and then
+/// every hour, so a slow leak shows up without anyone watching Task Manager.
+fn log_memory_use() {
+    std::thread::spawn(|| {
+        use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX};
+        use windows::Win32::System::Threading::GetCurrentProcess;
+        let mut wait = std::time::Duration::from_secs(60);
+        loop {
+            std::thread::sleep(wait);
+            wait = std::time::Duration::from_secs(3600);
+            let mut pmc = PROCESS_MEMORY_COUNTERS_EX::default();
+            let ok = unsafe {
+                GetProcessMemoryInfo(
+                    GetCurrentProcess(),
+                    &mut pmc as *mut PROCESS_MEMORY_COUNTERS_EX as *mut PROCESS_MEMORY_COUNTERS,
+                    std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+                )
+            };
+            if ok.is_ok() {
+                log::write(&format!(
+                    "memory: {} K working set, {} K private",
+                    pmc.WorkingSetSize / 1024,
+                    pmc.PrivateUsage / 1024
+                ));
+            }
+        }
+    });
 }
 
 /// Started at sign-in, betterUI can be up before Explorer has made its
