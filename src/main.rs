@@ -73,6 +73,7 @@ fn main() {
     }
 
     log::write("betterUI starting");
+    wait_for_explorer_taskbar();
     autostart::refresh_path();
     if let Err(e) = bar::run() {
         log::write(&format!("fatal error: {e:?}"));
@@ -81,4 +82,25 @@ fn main() {
     // Always leave the desktop the way we found it.
     taskbar::restore();
     log::write("betterUI exited");
+}
+
+/// Started at sign-in, betterUI can be up before Explorer has made its
+/// taskbar. Hiding the taskbar and taking over the tray only work once it
+/// exists, so wait for it (at most 60 s, e.g. if Explorer isn't running at
+/// all), then give Explorer a moment to finish setting it up.
+fn wait_for_explorer_taskbar() {
+    use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+    let found = || unsafe { FindWindowW(w!("Shell_TrayWnd"), None).map(|h| !h.is_invalid()).unwrap_or(false) };
+    if found() {
+        return;
+    }
+    let started = std::time::Instant::now();
+    while !found() && started.elapsed().as_secs() < 60 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let waited = started.elapsed().as_secs_f32();
+    log::write(&format!("waited {waited:.1} s for Explorer's taskbar (found: {})", found()));
+    if found() {
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+    }
 }
