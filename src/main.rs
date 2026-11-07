@@ -85,7 +85,7 @@ fn main() {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
 
-    log::write("betterUI starting");
+    log::write(&format!("betterUI {} starting", env!("CARGO_PKG_VERSION")));
     watchdog::start();
     log_memory_use();
     wait_for_explorer_taskbar();
