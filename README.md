@@ -117,7 +117,10 @@ None of them are in the MVP. Today only the dock slides in and out.
   monitor you clicked. The dock stays on the main monitor.
 - **Quit:** right-click the bar → *Quit betterUI*. The Windows taskbar comes back.
 - **Start with Windows:** right-click the bar → *Start with Windows*. betterUI
-  then starts when you sign in (it also appears in Task Manager → Startup apps).
+  then starts the moment you sign in, through a task named *betterUI* in Task
+  Scheduler (no admin rights needed). Windows delays apps in Task Manager's
+  Startup apps list by several seconds, which let the Windows taskbar show
+  first and let tray apps register with it instead of betterUI.
   From a terminal: `betterui.exe --start-with-windows=on` (or `off`).
 - **Bar visibility:** right-click the bar → *Bar visibility*: always show (keeps
   its strip at the top), auto-hide (appears when the mouse touches the top edge),

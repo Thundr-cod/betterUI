@@ -101,13 +101,19 @@ jobs:
         shell: pwsh
         run: |
           $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+          # An old-style Run key entry should be replaced by the sign-in task.
+          New-ItemProperty $key -Name betterUI -Value '"C:\old\betterui.exe"' -PropertyType String -Force | Out-Null
           Start-Process .\betterui.exe -ArgumentList '--start-with-windows=on' -Wait
+          $xml = schtasks /Query /TN betterUI /XML 2>&1 | Out-String
+          Write-Output $xml
+          if ($LASTEXITCODE -ne 0 -or $xml -notlike '*betterui.exe*') { Write-Output "::error::sign-in task was not created"; exit 1 }
+          if ($xml -notlike '*<LogonTrigger>*' -or $xml -notlike '*<Priority>4</Priority>*' -or $xml -notlike '*PT0S*') { Write-Output "::error::sign-in task has the wrong settings"; exit 1 }
           $v = (Get-ItemProperty $key -ErrorAction SilentlyContinue).betterUI
-          Write-Output "registered: $v"
-          if (-not $v -or $v -notlike '*betterui.exe*') { Write-Output "::error::start with Windows was not registered"; exit 1 }
+          if ($v) { Write-Output "::error::Run key entry was not removed"; exit 1 }
           Start-Process .\betterui.exe -ArgumentList '--start-with-windows=off' -Wait
-          $v = (Get-ItemProperty $key -ErrorAction SilentlyContinue).betterUI
-          if ($v) { Write-Output "::error::start with Windows was not removed"; exit 1 }
+          schtasks /Query /TN betterUI 2>&1 | Out-Null
+          if ($LASTEXITCODE -eq 0) { Write-Output "::error::sign-in task was not removed"; exit 1 }
+          $global:LASTEXITCODE = 0
           Write-Output "on/off works"
 
       - name: Run betterUI and take screenshots
