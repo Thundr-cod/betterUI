@@ -207,15 +207,78 @@ fn squirrel_app(target: &str, args: &str) -> Option<String> {
     None
 }
 
+/// PKEY_AppUserModel_ID, built from an existing key of the same type.
+macro_rules! app_id_key {
+    () => {{
+        let mut key = PKEY_Device_FriendlyName;
+        key.fmtid = GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3);
+        key.pid = 5;
+        key
+    }};
+}
+
+/// The AppUserModelID of a Store app's window (e.g.
+/// `Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`), used to find its icon.
+/// Store apps run inside ApplicationFrameHost, whose frame window often
+/// carries the ID; if not, the app's own process (behind the frame's
+/// CoreWindow child) knows it.
+pub fn window_app_id(hwnd: HWND) -> Option<String> {
+    use windows::Win32::UI::Shell::PropertiesSystem::SHGetPropertyStoreForWindow;
+    unsafe {
+        let store: windows::core::Result<IPropertyStore> = SHGetPropertyStoreForWindow(hwnd);
+        if let Ok(store) = store {
+            if let Ok(v) = store.GetValue(&app_id_key!()) {
+                let id = v.to_string();
+                if !id.is_empty() {
+                    return Some(id);
+                }
+            }
+        }
+    }
+    core_window_app_id(hwnd)
+}
+
+fn core_window_app_id(frame: HWND) -> Option<String> {
+    use windows::Win32::Foundation::{CloseHandle, BOOL, LPARAM};
+    use windows::Win32::Storage::Packaging::Appx::GetApplicationUserModelId;
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows::Win32::UI::WindowsAndMessaging::EnumChildWindows;
+
+    unsafe extern "system" fn find(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        if class_name(hwnd) == "Windows.UI.Core.CoreWindow" {
+            *(lparam.0 as *mut HWND) = hwnd;
+            return BOOL(0);
+        }
+        BOOL(1)
+    }
+    let mut core = HWND::default();
+    unsafe {
+        let _ = EnumChildWindows(frame, Some(find), LPARAM(&mut core as *mut HWND as isize));
+    }
+    if core.is_invalid() {
+        return None;
+    }
+    let mut pid = 0u32;
+    unsafe {
+        GetWindowThreadProcessId(core, Some(&mut pid));
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buf = [0u16; 256];
+        let mut len = buf.len() as u32;
+        let rc = GetApplicationUserModelId(process, &mut len, windows::core::PWSTR(buf.as_mut_ptr()));
+        let _ = CloseHandle(process);
+        if rc.0 != 0 {
+            return None;
+        }
+        let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        Some(String::from_utf16_lossy(&buf[..n])).filter(|s| !s.is_empty())
+    }
+}
+
 /// A shortcut's AppUserModelID (the ID the taskbar groups windows by).
 fn shortcut_app_id(link: &IShellLinkW) -> String {
     unsafe {
         let Ok(store) = link.cast::<IPropertyStore>() else { return String::new() };
-        // PKEY_AppUserModel_ID, built from an existing key of the same type.
-        let mut key = PKEY_Device_FriendlyName;
-        key.fmtid = GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3);
-        key.pid = 5;
-        store.GetValue(&key).map(|v| v.to_string()).unwrap_or_default()
+        store.GetValue(&app_id_key!()).map(|v| v.to_string()).unwrap_or_default()
     }
 }
 
