@@ -47,7 +47,7 @@ pub fn is_store_host(exe: &str) -> bool {
     exe.ends_with(STORE_APP_HOST)
 }
 
-fn class_name(hwnd: HWND) -> String {
+pub fn class_name(hwnd: HWND) -> String {
     let mut buf = [0u16; 128];
     let n = unsafe { GetClassNameW(hwnd, &mut buf) };
     String::from_utf16_lossy(&buf[..n.max(0) as usize])

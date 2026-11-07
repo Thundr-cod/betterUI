@@ -24,12 +24,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 pub struct Icons {
     wic: IWICImagingFactory,
     cache: HashMap<String, Option<IWICBitmapSource>>,
+    /// Windows whose missing icon has already been noted in log.txt.
+    logged_misses: std::collections::HashSet<isize>,
 }
 
 impl Icons {
     pub fn new() -> Result<Self> {
         let wic = unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)? };
-        Ok(Self { wic, cache: HashMap::new() })
+        Ok(Self { wic, cache: HashMap::new(), logged_misses: std::collections::HashSet::new() })
     }
 
     /// Icon for a file (exe or shortcut), `size` pixels square.
@@ -77,8 +79,22 @@ impl Icons {
         // Store apps (Settings, Calculator, Clock …) give their frame window
         // no icon; load the app's own icon from its entry in the Apps folder.
         let loaded = loaded.or_else(|| {
-            let id = crate::apps::window_app_id(hwnd)?;
-            self.load_path(&format!("shell:AppsFolder\\{id}"), size).ok()
+            let id = crate::apps::window_app_id(hwnd);
+            let result = id.as_ref().map(|id| self.load_path(&format!("shell:AppsFolder\\{id}"), size));
+            // Note each window's first miss, so a missing icon can be traced.
+            if !matches!(result, Some(Ok(_))) && self.logged_misses.insert(hwnd.0 as isize) {
+                crate::log::write(&format!(
+                    "no icon for window \"{}\": app id {:?}, {}",
+                    crate::apps::class_name(hwnd),
+                    id,
+                    match &result {
+                        Some(Err(e)) => format!("loading it failed: {e}"),
+                        Some(Ok(_)) => String::new(),
+                        None => "no app id found".to_string(),
+                    }
+                ));
+            }
+            result.and_then(|r| r.ok())
         });
         if loaded.is_some() {
             self.cache.insert(key, loaded.clone());

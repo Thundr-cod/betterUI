@@ -72,6 +72,10 @@ struct Dock {
     letter_font: IDWriteTextFormat,
     icons: Option<Icons>,
     bitmaps: HashMap<String, Option<ID2D1Bitmap>>,
+    /// When an icon lookup last came back empty, so it's retried later
+    /// instead of never (a Store app's content attaches after its window
+    /// opens, so the first lookup can miss).
+    icon_misses: HashMap<String, std::time::Instant>,
     bitmap_generation: u64,
     pins: Vec<Pin>,
     items: Vec<DockItem>,
@@ -154,6 +158,7 @@ fn create_inner(config: &Config, forced: bool) -> Result<()> {
             letter_font,
             icons: Icons::new().map_err(|e| log::write(&format!("icons unavailable: {e:?}"))).ok(),
             bitmaps: HashMap::new(),
+            icon_misses: HashMap::new(),
             bitmap_generation: 0,
             pins: apps::load_pins(),
             items: Vec::new(),
@@ -670,6 +675,11 @@ impl Dock {
         if let Some(cached) = self.bitmaps.get(&key) {
             return cached.clone();
         }
+        if let Some(missed) = self.icon_misses.get(&key) {
+            if missed.elapsed() < std::time::Duration::from_secs(3) {
+                return None;
+            }
+        }
         let icons = self.icons.as_mut()?;
         let source = match (&item.launch, item.windows.first()) {
             (Some(path), _) => icons.for_path(path, size),
@@ -677,7 +687,12 @@ impl Dock {
             _ => None,
         };
         let bmp = source.and_then(|src| frame.bitmap(&src).ok());
-        self.bitmaps.insert(key, bmp.clone());
+        if bmp.is_some() {
+            self.icon_misses.remove(&key);
+            self.bitmaps.insert(key, bmp.clone());
+        } else {
+            self.icon_misses.insert(key, std::time::Instant::now());
+        }
         bmp
     }
 }

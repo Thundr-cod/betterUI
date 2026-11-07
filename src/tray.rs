@@ -51,6 +51,7 @@ const TIMER_TOPMOST: usize = 1; // keep our window ahead of Explorer's (every 1 
 const TIMER_REBROADCAST: usize = 2; // ask apps to re-send their icons again
 const TIMER_EXPLORER_LIST: usize = 3; // compare with the icons Explorer holds
 const TIMER_EXPLORER_FALLBACK: usize = 4; // show Explorer's copy of icons that never arrived
+const TIMER_EXPLORER_TIMEOUT: usize = 5; // note it if Explorer never answers
 const WM_EXPLORER_ICONS: u32 = WM_USER + 0x7F0; // the list is ready (from a worker thread)
 
 /// The 32-bit-compatible NOTIFYICONDATAW layout used on the wire, so 32-bit
@@ -397,6 +398,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     let _ = KillTimer(hwnd, TIMER_EXPLORER_LIST);
                     request_explorer_icons(hwnd);
                 }
+                TIMER_EXPLORER_TIMEOUT => {
+                    let _ = KillTimer(hwnd, TIMER_EXPLORER_TIMEOUT);
+                    debug("no answer from Explorer's tray list after 5 s");
+                }
                 TIMER_EXPLORER_FALLBACK => {
                     let _ = KillTimer(hwnd, TIMER_EXPLORER_FALLBACK);
                     add_explorer_fallbacks();
@@ -593,6 +598,10 @@ static EXPLORER_ICONS: std::sync::Mutex<Option<std::result::Result<SendIcons, St
 /// Read Explorer's list on a worker thread (it waits on Explorer), then
 /// post the result back to the tray window.
 fn request_explorer_icons(hwnd: HWND) {
+    debug("reading the icons Explorer's tray holds");
+    unsafe {
+        SetTimer(hwnd, TIMER_EXPLORER_TIMEOUT, 5000, None);
+    }
     let target = hwnd.0 as isize;
     std::thread::spawn(move || {
         let result = crate::tray_explorer::list().map(SendIcons);
@@ -620,6 +629,9 @@ fn file_name(path: &str) -> String {
 /// app's icon window "TaskbarCreated" directly (a broadcast doesn't reach
 /// message-only windows), and give it two seconds to send its icon.
 fn on_explorer_icons(hwnd: HWND) {
+    unsafe {
+        let _ = KillTimer(hwnd, TIMER_EXPLORER_TIMEOUT);
+    }
     let items = match EXPLORER_ICONS.lock().ok().and_then(|mut s| s.take()) {
         Some(Ok(SendIcons(items))) => items,
         Some(Err(e)) => {

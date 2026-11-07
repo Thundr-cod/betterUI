@@ -178,6 +178,16 @@ jobs:
             exit 1
           }
 
+      - name: Explorer tray list (informational)
+        shell: pwsh
+        run: |
+          $proc = Start-Process .\betterui.exe -PassThru
+          Start-Sleep -Seconds 13
+          Select-String -Path "$env:APPDATA\betterUI\tray_debug.txt" -Pattern "Explorer|asked|copy|no answer" | ForEach-Object { $_.Line }
+          Get-Content "$env:APPDATA\betterUI\log.txt" -Tail 3
+          Stop-Process -Id $proc.Id -Force
+          Start-Sleep -Seconds 5
+
       - name: Taskbar comes back after End task
         shell: pwsh
         run: |
