@@ -1,0 +1,56 @@
+commit: d8efd4414531e69bb78d6b2a9c68e1a861997a63
+ref: fix/dock-async-icons28/merge
+screen: 1024x768
+explorer running: True
+transparency effects: 1
+screenshot.png : still running after 7s = True
+audio-devices.png : still running after 7s = True
+audio-mixer.png : still running after 7s = True
+bluetooth.png : still running after 7s = True
+control-center.png : still running after 7s = True
+dock.png : still running after 7s = True
+tray.png : still running after 7s = True
+rebuilt-bars.png : still running after 7s = True
+--- log.txt ---
+[1794079751] betterUI 0.0.811 starting
+[1794079751] monitors: 0 -> 1
+[1794079751] dock pin File Explorer.lnk -> "explorer.exe"
+[1794079751] dock pin Microsoft Edge.lnk -> "msedge.exe"
+[1794079758] betterUI ended without putting the taskbar back (End task or crash); the watchdog restored it
+[1794079759] betterUI 0.0.811 starting
+[1794079759] monitors: 0 -> 1
+[1794079759] dock pin File Explorer.lnk -> "explorer.exe"
+[1794079759] dock pin Microsoft Edge.lnk -> "msedge.exe"
+[1794079766] betterUI ended without putting the taskbar back (End task or crash); the watchdog restored it
+[1794079767] betterUI 0.0.811 starting
+[1794079767] monitors: 0 -> 1
+[1794079768] dock pin File Explorer.lnk -> "explorer.exe"
+[1794079768] dock pin Microsoft Edge.lnk -> "msedge.exe"
+[1794079774] betterUI ended without putting the taskbar back (End task or crash); the watchdog restored it
+[1794079775] betterUI 0.0.811 starting
+[1794079775] monitors: 0 -> 1
+[1794079776] dock pin File Explorer.lnk -> "explorer.exe"
+[1794079776] dock pin Microsoft Edge.lnk -> "msedge.exe"
+[1794079783] betterUI ended without putting the taskbar back (End task or crash); the watchdog restored it
+[1794079784] betterUI 0.0.811 starting
+[1794079784] monitors: 0 -> 1
+[1794079784] dock pin File Explorer.lnk -> "explorer.exe"
+[1794079784] dock pin Microsoft Edge.lnk -> "msedge.exe"
+[1794079791] betterUI ended without putting the taskbar back (End task or crash); the watchdog restored it
+[1794079792] betterUI 0.0.811 starting
+[1794079792] monitors: 0 -> 1
+[1794079792] dock pin File Explorer.lnk -> "explorer.exe"
+[1794079792] dock pin Microsoft Edge.lnk -> "msedge.exe"
+[1794079799] betterUI ended without putting the taskbar back (End task or crash); the watchdog restored it
+[1794079800] betterUI 0.0.811 starting
+[1794079800] monitors: 0 -> 1
+[1794079800] dock pin File Explorer.lnk -> "explorer.exe"
+[1794079800] dock pin Microsoft Edge.lnk -> "msedge.exe"
+[1794079807] betterUI ended without putting the taskbar back (End task or crash); the watchdog restored it
+[1794079808] betterUI 0.0.811 starting
+[1794079808] monitors: 0 -> 1
+[1794079808] dock pin File Explorer.lnk -> "explorer.exe"
+[1794079808] dock pin Microsoft Edge.lnk -> "msedge.exe"
+[1794079810] monitors: 1 -> 1
+[1794079815] betterUI ended without putting the taskbar back (End task or crash); the watchdog restored it
+
