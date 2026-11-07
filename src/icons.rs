@@ -74,6 +74,12 @@ impl Icons {
                 self.from_hicon(HICON(hicon as *mut _), size).ok()
             }
         };
+        // Store apps (Settings, Calculator, Clock …) give their frame window
+        // no icon; load the app's own icon from its entry in the Apps folder.
+        let loaded = loaded.or_else(|| {
+            let id = crate::apps::window_app_id(hwnd)?;
+            self.load_path(&format!("shell:AppsFolder\\{id}"), size).ok()
+        });
         if loaded.is_some() {
             self.cache.insert(key, loaded.clone());
         }
