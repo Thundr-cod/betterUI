@@ -49,18 +49,17 @@ v0.0.1 was never published on its own (its PR merged together with v0.0.2's), so
 
 ### Known issues from real-PC testing
 
-Found while testing v0.0.801 on a real Windows 11 PC and not fixed yet.
+Found while testing on a real Windows 11 PC (v0.0.801 to v0.0.805) and not fixed yet.
 
 | Issue | Notes |
 | --- | --- |
-| **Some tray icons never appear (e.g. the NVIDIA app)** | Steam and Claude now show up, but the NVIDIA app and other icons Windows keeps in its hidden-icons area don't. `tray_debug.txt` shows no message at all from any NVIDIA process, not even after betterUI asks every app to re-send its icons, so betterUI isn't filtering it out: the app never talks to betterUI's tray. Likely causes to check: the app ignores the `TaskbarCreated` broadcast, or it runs elevated, which stops Windows delivering that broadcast to it. Possible fixes: read the icons Explorer already holds, or re-ask only those apps a different way. |
-| **Hide redundant tray icons** | Explorer's own Bluetooth icon duplicates betterUI's Bluetooth button. Decide which Explorer-owned icons to hide once the full list shows up. |
-| **Dock divider looks low-res and uneven** | Better since v0.0.702 but still soft, and its thickness varies. Snap it to whole device pixels at the monitor's DPI so it's one crisp, even line. |
+| **NVIDIA app's tray icon never appears** | Other apps' icons arrive (Steam, Claude, Discord, Proton, Windows Security), but no NVIDIA program ever sends betterUI a tray message, even when betterUI starts at sign-in (v0.0.805). The icon also doesn't come back in Windows' own tray when the NVIDIA app is restarted, so it belongs to a background process started at sign-in. Next step: read the icons Explorer already holds, through Windows' undocumented tray-notify interface. |
+| **Win+N does nothing** | The notification center doesn't open while betterUI has the Windows taskbar hidden. Win+A and the other shortcuts work. Possible fix: open it with the `ms-actioncenter:` link, from Win+N or from clicking the bar's clock. |
 | **Code signing** | The SignPath Foundation application was not approved, so builds stay unsigned and Smart App Control blocks them. Pick another way to sign the exe. |
 
-**Not yet tested on real hardware:** multiple monitors, brightness on DDC/CI
-monitors, and tray click forwarding (clicking an icon in betterUI's tray
-dropdown passes the click on to its app, e.g. right-click Steam for its menu).
+Tested on real hardware and working: multiple monitors, brightness on DDC/CI
+monitors, tray click forwarding, the dock divider and icon fixes (v0.0.803),
+dock pin matching and Steam (v0.0.804), starting at sign-in (v0.0.805).
 
 ### New features
 
@@ -68,7 +67,12 @@ These are planned for after `v0.1.0` and are **not** part of the MVP.
 
 | Feature | Notes |
 | --- | --- |
-| **Dark or custom-colour flyouts** | The flyouts (audio, Bluetooth, control center, tray) are drawn white today. Give them their own colour setting, or a dark mode with the same tint, opacity and blur as the top bar and dock, so the whole shell matches. |
+| **Dark right-click menus** | The flyouts already match the dock's colour, but right-clicking the bar or the dock opens a white Windows menu. Draw those menus dark too, so the whole shell matches. |
+| **Hide volume and Bluetooth from the tray dropdown** | Explorer's own volume and Bluetooth icons duplicate betterUI's volume and Bluetooth buttons, so leave them out of the tray dropdown. |
+| **Mute keeps the volume level** | Pressing mute moves the flyout's volume slider to zero. Show a muted state instead and keep the slider at its level, as Windows does. |
+| **Show auto-hidden bar and dock over maximized windows** | With auto-hide on (and "hide when a window covers it" off), touching the screen edge doesn't bring the bar or dock up over a maximized window. Pressing the Windows key works for now. |
+| **Separate size settings** | Set the size of dock icons and the height of the top bar independently, instead of both following Windows' display scale. |
+| **App menus on the dock** | Right-clicking an app on the dock shows its own tasks and recent items, like the Windows taskbar's jump lists (e.g. Steam's Library, Friends and recently played games). |
 | **Start button on the top bar** | A clickable Start button at the left end of the top bar. Today Start opens only from the Windows key. |
 | **Start button on the dock** | A button at the left end of the dock that opens the Start menu. |
 | **Drag to rearrange dock icons** | Drag a pinned icon along the dock to change its place; the new order is saved to `dock_pins.txt`. Today the order can only be changed by editing that file. |
