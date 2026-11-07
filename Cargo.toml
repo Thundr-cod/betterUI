@@ -1,6 +1,6 @@
 [package]
 name = "betterui"
-version = "0.0.805"
+version = "0.0.809"
 edition = "2021"
 description = "A lightweight native desktop shell for Windows 11 (top bar + dock)"
 license = "GPL-3.0-only"
@@ -14,6 +14,7 @@ windows-core = "0.58"
 [dependencies.windows]
 version = "0.58"
 features = [
+    "implement",
     "Foundation",
     "Foundation_Collections",
     "Foundation_Numerics",
