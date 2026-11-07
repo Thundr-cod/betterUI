@@ -191,6 +191,9 @@ jobs:
           Get-Content "$env:APPDATA\betterUI\log.txt" -Tail 5
           if (Test-Path $state) { Write-Output "::error::the taskbar was not restored after betterUI was killed"; exit 1 }
           if (-not (Select-String -Path "$env:APPDATA\betterUI\log.txt" -Pattern 'watchdog restored' -Quiet)) { Write-Output "::error::no watchdog line in log.txt"; exit 1 }
+          # The watchdog re-checks the taskbar for 3 s before it exits.
+          $deadline = (Get-Date).AddSeconds(10)
+          while ((Get-Process betterui -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
           $left = Get-Process betterui -ErrorAction SilentlyContinue
           if ($left) { Write-Output "::error::betterui processes left running: $($left.Id -join ', ')"; exit 1 }
           Write-Output "watchdog restored the taskbar and exited"
