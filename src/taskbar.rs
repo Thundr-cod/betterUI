@@ -168,8 +168,20 @@ pub fn restore_and_settle() {
     ));
     let original = restore_state();
     let mut actions: Vec<&str> = Vec::new();
-    for step in 0..15 {
+    // Check every 200 ms for at least 3 s, and until a taskbar window has
+    // stayed visible for 1 s, up to 10 s. Quitting with the Start menu open
+    // makes Explorer rebuild its taskbar: on the real PC there was no taskbar
+    // window at all when the restore began, and the new one appeared, hidden,
+    // about 3 s later.
+    let mut visible_since: Option<std::time::Instant> = None;
+    let started = std::time::Instant::now();
+    for step in 0..50 {
         std::thread::sleep(std::time::Duration::from_millis(200));
+        let done = started.elapsed() >= std::time::Duration::from_secs(3)
+            && visible_since.map(|t| t.elapsed() >= std::time::Duration::from_secs(1)).unwrap_or(false);
+        if done {
+            break;
+        }
         if another_instance_running() {
             // A new betterUI has started; it owns the taskbar now.
             crate::log::write("another betterUI is running; leaving the taskbar to it");
@@ -207,6 +219,13 @@ pub fn restore_and_settle() {
                 set_state(o);
                 actions.push("slid back");
             }
+        }
+        let windows = taskbar_windows();
+        let all_visible = !windows.is_empty() && windows.iter().all(|h| unsafe { IsWindowVisible(*h).as_bool() });
+        if all_visible {
+            visible_since.get_or_insert_with(std::time::Instant::now);
+        } else {
+            visible_since = None;
         }
         if let Some(original) = original {
             if get_state() != original {
