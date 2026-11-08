@@ -74,8 +74,7 @@ These are planned for after `v0.1.0` and are **not** part of the MVP.
 | **Animate dock icons in** | A newly opened app's icon pops onto the dock. Slide or fade it in, the way the Windows taskbar animates new buttons up from the bottom. |
 | **Separate size settings** | Set the size of dock icons and the height of the top bar independently, instead of both following Windows' display scale. |
 | **App menus on the dock** | Right-clicking an app on the dock shows its own tasks and recent items, like the Windows taskbar's jump lists (e.g. Steam's Library, Friends and recently played games). |
-| **Start button on the top bar** | A clickable Start button at the left end of the top bar. Today Start opens only from the Windows key. |
-| **Start button on the dock** | A button at the left end of the dock that opens the Start menu. |
+| **Start button on the top bar** | A clickable Start button at the left end of the top bar too (the dock has one since v0.0.900). |
 | **Drag to rearrange dock icons** | Drag a pinned icon along the dock to change its place; the new order is saved to `dock_pins.txt`. Today the order can only be changed by editing that file. |
 | **Custom app icons** | A section in betterUI's settings to upload your own icon for any app on the dock, replacing the one Windows provides. |
 | **Themes** | Selectable colour, font and shape themes for the bar, flyouts and dock, beyond the current opacity and blur settings. |
@@ -144,6 +143,9 @@ None of them are in the MVP. Today only the dock slides in and out.
   middle-click for a new window, right-click to pin/unpin, close, or change
   when the dock hides. It starts with your taskbar pins; the list lives in
   `%APPDATA%\betterUI\dock_pins.txt`.
+- **Start button:** the button at the left end of the dock opens Start;
+  right-click it for the Win+X menu. Right-click the dock → *Show Start
+  button* to hide it.
 - **System tray:** the arrow button on the bar opens your tray icons. Click
   an icon to open its app, right-click for its menu, hover to see its
   tooltip. Can be turned off with `tray_enabled = false` in `config.ini`.
