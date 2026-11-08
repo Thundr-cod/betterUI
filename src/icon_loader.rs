@@ -59,6 +59,7 @@ impl Loader {
             }
             let mut icons = Icons::new().map_err(|e| crate::log::write(&format!("icon loader unavailable: {e:?}"))).ok();
             while let Ok(req) = rx.recv() {
+                let started = std::time::Instant::now();
                 let pixels = icons.as_mut().and_then(|icons| {
                     let source = match &req.source {
                         Source::Path(p) => icons.for_path(p, req.size),
@@ -66,6 +67,10 @@ impl Loader {
                     };
                     source.and_then(|s| pixels_of(&s))
                 });
+                let ms = started.elapsed().as_millis();
+                if ms >= 200 {
+                    crate::log::write(&format!("dock icon slow: {} took {ms} ms", req.key));
+                }
                 if let Ok(mut d) = results.lock() {
                     d.push(Loaded { key: req.key, pixels });
                 }
