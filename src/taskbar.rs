@@ -160,12 +160,19 @@ pub fn restore() {
 /// hidden: Start closing a moment later made Explorer re-apply the hidden
 /// state betterUI had set. Used when betterUI quits and by the watchdog.
 pub fn restore_and_settle() {
+    crate::log::write(&format!(
+        "restoring the taskbar: {} taskbar window(s) found, auto-hide state {:#x}, front \"Shell_TrayWnd\" is Explorer's: {}",
+        taskbar_windows().len(),
+        get_state(),
+        front_is_explorer()
+    ));
     let original = restore_state();
     let mut actions: Vec<&str> = Vec::new();
     for step in 0..15 {
         std::thread::sleep(std::time::Duration::from_millis(200));
         if another_instance_running() {
             // A new betterUI has started; it owns the taskbar now.
+            crate::log::write("another betterUI is running; leaving the taskbar to it");
             return;
         }
         if hidden_by_us() {
@@ -208,9 +215,34 @@ pub fn restore_and_settle() {
             }
         }
     }
+    let windows = taskbar_windows();
+    crate::log::write(&format!(
+        "taskbar after restoring: {} window(s), visible={:?}, off-screen={:?}, auto-hide state {:#x} (saved {original:?})",
+        windows.len(),
+        windows.iter().map(|h| unsafe { IsWindowVisible(*h).as_bool() }).collect::<Vec<_>>(),
+        windows.iter().map(|h| parked_off_screen(*h)).collect::<Vec<_>>(),
+        get_state()
+    ));
     if !actions.is_empty() {
         actions.dedup();
         crate::log::write(&format!("Explorer hid the taskbar again after it was restored; fixed it ({})", actions.join(", ")));
+    }
+}
+
+/// Does "Shell_TrayWnd" (what Windows and apps look up) find Explorer's
+/// taskbar rather than betterUI's tray host?
+fn front_is_explorer() -> bool {
+    use windows::core::w;
+    use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+    unsafe {
+        match FindWindowW(w!("Shell_TrayWnd"), None) {
+            Ok(h) => {
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(h, Some(&mut pid));
+                pid != GetCurrentProcessId()
+            }
+            Err(_) => false,
+        }
     }
 }
 

@@ -104,6 +104,7 @@ fn main() {
         }
     }
     taskbar::set_quitting();
+    tray::stop();
     taskbar::restore_and_settle();
     log::write("betterUI exited");
 }

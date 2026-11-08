@@ -152,6 +152,22 @@ fn explorer_tray(ours: HWND) -> Option<HWND> {
     }
 }
 
+/// The tray host window, so it can be closed when betterUI quits.
+static HOST_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// Close the tray host. Called when betterUI quits, before the Windows
+/// taskbar is restored: the host has the taskbar's class name and sits in
+/// front, so while it exists Windows' own taskbar calls (auto-hide on/off)
+/// reach it first instead of Explorer. Must run on the thread that made it.
+pub fn stop() {
+    let raw = HOST_HWND.swap(0, std::sync::atomic::Ordering::SeqCst);
+    if raw != 0 {
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(HWND(raw as *mut _));
+        }
+    }
+}
+
 pub fn start(on_change: fn()) {
     if let Err(e) = start_inner(on_change) {
         log::write(&format!("tray host could not start: {e:?}"));
@@ -186,6 +202,7 @@ fn start_inner(on_change: fn()) -> Result<()> {
             hinstance,
             None,
         )?;
+        HOST_HWND.store(hwnd.0 as isize, std::sync::atomic::Ordering::SeqCst);
         let taskbar_created = RegisterWindowMessageW(w!("TaskbarCreated"));
         HOST.with(|h| {
             *h.borrow_mut() = Some(Host { icons: Vec::new(), taskbar_created, last_broadcast: None, explorer_pending: Vec::new(), on_change: Some(on_change) })
