@@ -79,6 +79,8 @@ struct Dock {
     icon_misses: HashMap<String, std::time::Instant>,
     /// Loads icons off this thread (icon_loader.rs).
     loader: Option<crate::icon_loader::Loader>,
+    /// When each kind of slow step was last logged (see `note_slow`).
+    slow_logged: HashMap<&'static str, std::time::Instant>,
     /// Icons asked for and not back yet.
     icons_pending: std::collections::HashSet<String>,
     /// Loaded icons' pixels, kept so bitmaps can be remade cheaply when the
@@ -168,6 +170,7 @@ fn create_inner(config: &Config, forced: bool) -> Result<()> {
             bitmaps: HashMap::new(),
             icon_misses: HashMap::new(),
             loader: None,
+            slow_logged: HashMap::new(),
             icons_pending: std::collections::HashSet::new(),
             icon_pixels: HashMap::new(),
             bitmap_generation: 0,
@@ -254,7 +257,10 @@ impl Dock {
                 unsafe {
                     let mut ps = PAINTSTRUCT::default();
                     BeginPaint(self.hwnd, &mut ps);
-                    if let Err(e) = self.paint() {
+                    let started = std::time::Instant::now();
+                    let painted = self.paint();
+                    self.note_slow("paint", started);
+                    if let Err(e) = painted {
                         log::write(&format!("dock paint failed: {e:?}"));
                     }
                     let _ = EndPaint(self.hwnd, &ps);
@@ -309,9 +315,28 @@ impl Dock {
 
     // ---- Contents -----------------------------------------------------------
 
+    /// Log a dock step that blocked the dock's thread for 30 ms or more (at
+    /// most once per 10 s per step), to find what makes the dock feel slow.
+    fn note_slow(&mut self, step: &'static str, started: std::time::Instant) {
+        let ms = started.elapsed().as_millis();
+        if ms < 30 {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if self.slow_logged.get(step).map(|t| now.duration_since(*t).as_secs() < 10).unwrap_or(false) {
+            return;
+        }
+        self.slow_logged.insert(step, now);
+        log::write(&format!("dock slow: {step} took {ms} ms ({} items)", self.items.len()));
+    }
+
     fn refresh_items(&mut self) {
+        let started = std::time::Instant::now();
         let windows = apps::app_windows();
+        self.note_slow("listing windows", started);
+        let started = std::time::Instant::now();
         let items = self.stable_order(apps::dock_items(&self.pins, &windows));
+        self.note_slow("matching windows to pins", started);
         let fg = unsafe { GetForegroundWindow() };
         let signature: String = items
             .iter()
@@ -416,8 +441,10 @@ impl Dock {
             self.refresh_items();
         }
         if self.mode == DockMode::Smart && self.ticks % 3 == 0 {
+            let started = std::time::Instant::now();
             let dock = self.shown_rect();
             self.covered = apps::any_window_overlaps(&dock);
+            self.note_slow("checking for covering windows", started);
         }
 
         let mut cursor = POINT::default();
@@ -496,6 +523,12 @@ impl Dock {
     }
 
     fn animate(&mut self) {
+        let started = std::time::Instant::now();
+        self.animate_step();
+        self.note_slow("slide animation step", started);
+    }
+
+    fn animate_step(&mut self) {
         let target = if self.target_hidden { self.hidden_offset() } else { 0.0 };
         let diff = target - self.offset;
         if diff.abs() < 1.0 {

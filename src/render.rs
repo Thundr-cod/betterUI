@@ -169,8 +169,14 @@ impl Gfx {
     pub fn end(&mut self, frame: Frame) -> Result<()> {
         let r = unsafe { frame.target.EndDraw(None, None) };
         if r.is_err() {
+            // The graphics device was reset (sleep, driver update, display
+            // change): drop the target so the next paint makes a new one, and
+            // ask for that paint now so the window doesn't stay blank.
             self.target = None;
             self.brush = None;
+            unsafe {
+                let _ = windows::Win32::Graphics::Gdi::InvalidateRect(frame.target.GetHwnd(), None, false);
+            }
         }
         r
     }

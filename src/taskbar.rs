@@ -122,30 +122,74 @@ pub fn restore() {
 /// state betterUI had set. Used when betterUI quits and by the watchdog.
 pub fn restore_and_settle() {
     let original = restore_state();
-    let mut reapplied = false;
-    for _ in 0..15 {
+    let mut actions: Vec<&str> = Vec::new();
+    for step in 0..15 {
         std::thread::sleep(std::time::Duration::from_millis(200));
         if hidden_by_us() {
             // A new betterUI has started and hidden the taskbar again.
             return;
         }
+        let state = get_state();
         for hwnd in taskbar_windows() {
-            unsafe {
-                if !IsWindowVisible(hwnd).as_bool() {
+            let visible = unsafe { IsWindowVisible(hwnd).as_bool() };
+            let parked = parked_off_screen(hwnd);
+            if step == 0 || (!visible || parked) {
+                crate::log::write(&format!(
+                    "taskbar check {step}: visible={visible} off-screen={parked} cloaked={} auto-hide state={state:#x} (original {original:?})",
+                    crate::apps::is_cloaked(hwnd)
+                ));
+            }
+            if !visible {
+                unsafe {
                     let _ = ShowWindow(hwnd, SW_SHOWNA);
-                    reapplied = true;
                 }
+                actions.push("shown");
+            }
+            // Left parked below the screen (where auto-hide slides it) although
+            // auto-hide is off: switch auto-hide on and off again so Explorer
+            // slides it back into place.
+            if parked && original.map(|o| o & ABS_AUTOHIDE == 0).unwrap_or(false) {
+                let o = original.unwrap_or(0);
+                set_state(o | ABS_AUTOHIDE);
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                set_state(o);
+                actions.push("slid back");
             }
         }
         if let Some(original) = original {
             if get_state() != original {
                 set_state(original);
-                reapplied = true;
+                actions.push("setting restored");
             }
         }
     }
-    if reapplied {
-        crate::log::write("Explorer hid the taskbar again after it was restored; put it back");
+    if !actions.is_empty() {
+        actions.dedup();
+        crate::log::write(&format!("Explorer hid the taskbar again after it was restored; fixed it ({})", actions.join(", ")));
+    }
+}
+
+/// Is the taskbar window sitting (almost) entirely outside its monitor,
+/// where Explorer slides it while auto-hidden?
+fn parked_off_screen(hwnd: HWND) -> bool {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    unsafe {
+        let mut r = RECT::default();
+        if GetWindowRect(hwnd, &mut r).is_err() {
+            return false;
+        }
+        let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if !GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool() {
+            return false;
+        }
+        let m = mi.rcMonitor;
+        let w = (r.right.min(m.right) - r.left.max(m.left)).max(0);
+        let h = (r.bottom.min(m.bottom) - r.top.max(m.top)).max(0);
+        let full = (r.right - r.left).min(r.bottom - r.top).max(1);
+        // Auto-hide leaves a 2 px sliver on screen; a shown taskbar is ~48 px.
+        w.min(h) < full / 4
     }
 }
 

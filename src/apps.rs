@@ -53,7 +53,7 @@ pub fn class_name(hwnd: HWND) -> String {
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
 }
 
-fn is_cloaked(hwnd: HWND) -> bool {
+pub fn is_cloaked(hwnd: HWND) -> bool {
     let mut cloaked: u32 = 0;
     unsafe {
         DwmGetWindowAttribute(
