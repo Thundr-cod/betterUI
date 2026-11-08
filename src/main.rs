@@ -95,13 +95,15 @@ fn main() {
         log::write(&format!("fatal error: {e:?}"));
     }
 
-    // Always leave the desktop the way we found it. Let a new betterUI
+    // Always leave the desktop the way we found it. Nothing may hide the
+    // taskbar from here on (taskbar.rs, QUITTING). Let a new betterUI
     // start while the restore settles (it takes a few seconds).
     if let Ok(m) = mutex {
         unsafe {
             let _ = windows::Win32::Foundation::CloseHandle(m);
         }
     }
+    taskbar::set_quitting();
     taskbar::restore_and_settle();
     log::write("betterUI exited");
 }

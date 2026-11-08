@@ -71,6 +71,7 @@ These are planned for after `v0.1.0` and are **not** part of the MVP.
 | **Hide volume and Bluetooth from the tray dropdown** | Explorer's own volume and Bluetooth icons duplicate betterUI's volume and Bluetooth buttons, so leave them out of the tray dropdown. |
 | **Mute keeps the volume level** | Pressing mute moves the flyout's volume slider to zero. Show a muted state instead and keep the slider at its level, as Windows does. |
 | **Show auto-hidden bar and dock over maximized windows** | With auto-hide on (and "hide when a window covers it" off), touching the screen edge doesn't bring the bar or dock up over a maximized window. Pressing the Windows key works for now. |
+| **Animate dock icons in** | A newly opened app's icon pops onto the dock. Slide or fade it in, the way the Windows taskbar animates new buttons up from the bottom. |
 | **Separate size settings** | Set the size of dock icons and the height of the top bar independently, instead of both following Windows' display scale. |
 | **App menus on the dock** | Right-clicking an app on the dock shows its own tasks and recent items, like the Windows taskbar's jump lists (e.g. Steam's Library, Friends and recently played games). |
 | **Start button on the top bar** | A clickable Start button at the left end of the top bar. Today Start opens only from the Windows key. |
