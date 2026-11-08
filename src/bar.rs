@@ -832,6 +832,7 @@ impl Bar {
             let _ = DestroyMenu(menu); // also destroys the submenu
             let cmd = cmd.0 as usize;
             if cmd == MENU_QUIT {
+                taskbar::set_quitting();
                 PostQuitMessage(0);
             } else if (MENU_BAR_ALWAYS..=MENU_BAR_SMART).contains(&cmd) {
                 let mode = match cmd {

@@ -23,6 +23,38 @@ use windows::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::appbar::{ABM_GETSTATE, ABM_SETSTATE, ABS_AUTOHIDE};
 
+/// Set once betterUI starts quitting. From then on nothing may hide the
+/// taskbar: while betterUI restores it, Explorer can message betterUI's
+/// windows (e.g. "TaskbarCreated" when the Start menu was open), and their
+/// handlers used to hide it again, leaving it hidden after quitting.
+static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_quitting() {
+    QUITTING.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn quitting() -> bool {
+    QUITTING.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Is another betterUI (not this one) running? Only meaningful once this
+/// one has released its single-instance lock, i.e. while quitting, and in
+/// the watchdog.
+pub fn another_instance_running() -> bool {
+    use windows::core::w;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
+    unsafe {
+        match OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, w!("Local\\betterUI.singleton")) {
+            Ok(h) => {
+                let _ = CloseHandle(h);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+}
+
 fn state_file() -> PathBuf {
     crate::log::data_dir().join("taskbar_state.txt")
 }
@@ -77,6 +109,10 @@ fn set_state(state: u32) {
 
 /// Hide the native taskbar. Safe to call repeatedly.
 pub fn hide() {
+    if quitting() {
+        crate::log::write("ignored a request to hide the taskbar while quitting");
+        return;
+    }
     let path = state_file();
     let current = get_state();
     if !path.exists() {
@@ -96,6 +132,9 @@ pub fn hide() {
 /// Explorer sometimes re-shows the taskbar (for example when the mouse
 /// touches the bottom edge). Called on a short timer to undo that.
 pub fn rehide_if_visible() {
+    if quitting() {
+        return;
+    }
     for hwnd in taskbar_windows() {
         unsafe {
             if IsWindowVisible(hwnd).as_bool() {
@@ -125,9 +164,15 @@ pub fn restore_and_settle() {
     let mut actions: Vec<&str> = Vec::new();
     for step in 0..15 {
         std::thread::sleep(std::time::Duration::from_millis(200));
-        if hidden_by_us() {
-            // A new betterUI has started and hidden the taskbar again.
+        if another_instance_running() {
+            // A new betterUI has started; it owns the taskbar now.
             return;
+        }
+        if hidden_by_us() {
+            // Hidden again although nothing in this betterUI may hide it now:
+            // restore once more.
+            restore_state();
+            actions.push("restored again");
         }
         let state = get_state();
         for hwnd in taskbar_windows() {

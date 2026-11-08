@@ -11,11 +11,8 @@
 use std::os::windows::process::CommandExt;
 use std::process::Command;
 
-use windows::core::w;
 use windows::Win32::Foundation::CloseHandle;
-use windows::Win32::System::Threading::{
-    OpenMutexW, OpenProcess, WaitForSingleObject, INFINITE, PROCESS_SYNCHRONIZE, SYNCHRONIZATION_SYNCHRONIZE,
-};
+use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, INFINITE, PROCESS_SYNCHRONIZE};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -45,21 +42,9 @@ pub fn watch(pid: u32) {
         WaitForSingleObject(process, INFINITE);
         let _ = CloseHandle(process);
     }
-    if !crate::taskbar::hidden_by_us() || another_instance_running() {
+    if !crate::taskbar::hidden_by_us() || crate::taskbar::another_instance_running() {
         return;
     }
     crate::log::write("betterUI ended without putting the taskbar back (End task or crash); the watchdog restored it");
     crate::taskbar::restore_and_settle();
-}
-
-fn another_instance_running() -> bool {
-    unsafe {
-        match OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, w!("Local\\betterUI.singleton")) {
-            Ok(h) => {
-                let _ = CloseHandle(h);
-                true
-            }
-            Err(_) => false,
-        }
-    }
 }
