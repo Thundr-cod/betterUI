@@ -578,7 +578,8 @@ pub fn fullscreen_on(m: &RECT) -> bool {
 }
 
 /// The Start menu's window, when it is open (it is then the foreground
-/// window, owned by StartMenuExperienceHost.exe).
+/// window). Newer Windows 11 builds draw Start and Search together in
+/// SearchHost.exe (seen on the real PC); older ones in StartMenuExperienceHost.exe.
 pub fn start_menu_in_front() -> Option<HWND> {
     use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
     unsafe {
@@ -589,7 +590,7 @@ pub fn start_menu_in_front() -> Option<HWND> {
         let mut pid = 0u32;
         GetWindowThreadProcessId(fg, Some(&mut pid));
         let exe = procinfo::process_path(pid)?.to_lowercase();
-        exe.ends_with("\\startmenuexperiencehost.exe").then_some(fg)
+        (exe.ends_with("\\startmenuexperiencehost.exe") || exe.ends_with("\\searchhost.exe")).then_some(fg)
     }
 }
 
