@@ -76,6 +76,7 @@ These are planned for after `v0.1.0` and are **not** part of the MVP.
 | **App menus on the dock** | Right-clicking an app on the dock shows its own tasks and recent items, like the Windows taskbar's jump lists (e.g. Steam's Library, Friends and recently played games). |
 | **Start button on the top bar** | A clickable Start button at the left end of the top bar too (the dock has one since v0.0.900). |
 | **Drag to rearrange dock icons** | Drag a pinned icon along the dock to change its place; the new order is saved to `dock_pins.txt`. Today the order can only be changed by editing that file. |
+| **Sync pins with the Windows taskbar** | Apps pinned to the Windows taskbar show up pinned on the dock, and pinning or unpinning on the dock does the same on the Windows taskbar, so the two lists stay the same both ways. |
 | **Custom app icons** | A section in betterUI's settings to upload your own icon for any app on the dock, replacing the one Windows provides. |
 | **Themes** | Selectable colour, font and shape themes for the bar, flyouts and dock, beyond the current opacity and blur settings. |
 | **betterUI settings in Windows 11 Settings** | A betterUI page reachable from the Windows Settings app. Windows has no supported way for other apps to add their own page inside Settings, so this needs research first. The likely result is a betterUI settings window designed to match Windows 11 Settings, plus an easy way to open it. |
