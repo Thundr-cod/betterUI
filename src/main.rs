@@ -21,6 +21,7 @@ mod popup;
 mod procinfo;
 mod radios;
 mod render;
+mod start_menu;
 mod sysinfo;
 mod taskbar;
 mod tray;
