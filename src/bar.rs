@@ -213,7 +213,8 @@ pub fn run() -> Result<()> {
             }
         }
 
-        // Quitting: remove every bar (each unregisters its screen space).
+        // Quitting: remove the dock and every bar (each unregisters its screen space).
+        crate::dock::destroy();
         let bars: Vec<Bar> = BARS.with(|b| std::mem::take(&mut *b.borrow_mut()));
         for bar in bars {
             let _ = DestroyWindow(bar.hwnd);
