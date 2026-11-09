@@ -239,9 +239,7 @@ pub fn window_app_id(hwnd: HWND) -> Option<String> {
 }
 
 fn core_window_app_id(frame: HWND) -> Option<String> {
-    use windows::Win32::Foundation::{CloseHandle, BOOL, LPARAM};
-    use windows::Win32::Storage::Packaging::Appx::GetApplicationUserModelId;
-    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows::Win32::Foundation::{BOOL, LPARAM};
     use windows::Win32::UI::WindowsAndMessaging::EnumChildWindows;
 
     unsafe extern "system" fn find(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -261,6 +259,16 @@ fn core_window_app_id(frame: HWND) -> Option<String> {
     let mut pid = 0u32;
     unsafe {
         GetWindowThreadProcessId(core, Some(&mut pid));
+    }
+    process_app_id(pid)
+}
+
+/// The AppUserModelID of a packaged app's process (None for ordinary apps).
+pub fn process_app_id(pid: u32) -> Option<String> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::Storage::Packaging::Appx::GetApplicationUserModelId;
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
         let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buf = [0u16; 256];
         let mut len = buf.len() as u32;
@@ -574,23 +582,6 @@ pub fn fullscreen_on(m: &RECT) -> bool {
             return false;
         }
         r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom
-    }
-}
-
-/// The Start menu's window, when it is open (it is then the foreground
-/// window). Newer Windows 11 builds draw Start and Search together in
-/// SearchHost.exe (seen on the real PC); older ones in StartMenuExperienceHost.exe.
-pub fn start_menu_in_front() -> Option<HWND> {
-    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-    unsafe {
-        let fg = GetForegroundWindow();
-        if fg.is_invalid() {
-            return None;
-        }
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(fg, Some(&mut pid));
-        let exe = procinfo::process_path(pid)?.to_lowercase();
-        (exe.ends_with("\\startmenuexperiencehost.exe") || exe.ends_with("\\searchhost.exe")).then_some(fg)
     }
 }
 

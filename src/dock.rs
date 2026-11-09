@@ -25,9 +25,9 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, GetCursorPos,
-    GetForegroundWindow, GetWindowRect, IsIconic, KillTimer, LoadCursorW, PostMessageW, RegisterClassW,
+    GetForegroundWindow, GetWindowThreadProcessId, IsIconic, KillTimer, LoadCursorW, PostMessageW, RegisterClassW,
     SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TrackPopupMenu, HWND_TOPMOST,
-    IDC_ARROW, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE,
+    IDC_ARROW, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SWP_NOACTIVATE, SW_HIDE,
     SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
     WM_APP, WM_CLOSE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONUP, WM_MBUTTONUP,
     WM_MOUSEACTIVATE, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_NOACTIVATE,
@@ -108,8 +108,6 @@ struct Dock {
     target_hidden: bool,
     hide_ticks: u32,
     covered: bool,
-    /// Times Start was moved above the dock since it opened.
-    start_lifts: u32,
     ticks: u64,
     hovered: Option<usize>,
     /// The Start button at the left end (setting `dock_start`), where it
@@ -128,6 +126,7 @@ struct Dock {
 /// screen while the taskbar restore settles (about 3 s).
 pub fn destroy() {
     // Taken out first: DestroyWindow sends it messages, which must not find it borrowed.
+    crate::start_menu::uninstall();
     if let Some(dock) = DOCK.with(|d| d.borrow_mut().take()) {
         unsafe {
             let _ = DestroyWindow(dock.hwnd);
@@ -213,7 +212,6 @@ fn create_inner(config: &Config, forced: bool) -> Result<()> {
             target_hidden: false,
             hide_ticks: 0,
             covered: false,
-            start_lifts: 0,
             ticks: 0,
             hovered: None,
             start_button: config.dock_start,
@@ -234,6 +232,7 @@ fn create_inner(config: &Config, forced: bool) -> Result<()> {
         }
         dock.apply_offset();
         DOCK.with(|d| *d.borrow_mut() = Some(dock));
+        crate::start_menu::install();
         SetTimer(hwnd, TIMER_POLL, POLL_MS, None);
     }
     Ok(())
@@ -442,6 +441,13 @@ impl Dock {
         let mw = self.monitor.right - self.monitor.left;
         self.base_x = self.monitor.left + (mw - self.width) / 2;
         self.base_y = self.monitor.bottom - self.height - (MARGIN * s).round() as i32;
+        // SearchHost draws Start's visible panel 14 px below its window's
+        // bottom edge (measured on the real PC at 100%), so leave room for that.
+        crate::start_menu::set_target(
+            self.base_y - ((MARGIN + START_OVERHANG) * s).round() as i32,
+            self.monitor.left,
+            self.monitor.right,
+        );
         self.gfx.resize(self.width as u32, self.height as u32);
         self.apply_offset();
         self.invalidate();
@@ -465,57 +471,6 @@ impl Dock {
         unsafe {
             let _ = InvalidateRect(self.hwnd, None, false);
         }
-    }
-
-    /// Windows places Start above its own (hidden) taskbar, so it opens over
-    /// the dock. Move it up until its bottom clears the dock's top.
-    fn lift_start_menu(&mut self, dock: &RECT) {
-        let Some(start) = apps::start_menu_in_front() else {
-            self.start_lifts = 0;
-            return;
-        };
-        let Some(seen) = apps::window_rect(start) else { return };
-        // SearchHost draws the visible panel 14 px below its window's bottom
-        // edge (measured on the real PC at 100%), so clear that too.
-        let clear = dock.top - ((MARGIN + START_OVERHANG) * self.scale()).round() as i32;
-        if seen.bottom <= clear {
-            return;
-        }
-        // Windows may put it back; stop after a few tries so it can't flicker.
-        if self.start_lifts >= 5 {
-            if self.start_lifts == 5 {
-                log::write(&format!("Start menu: moved back over the dock {} times, leaving it", self.start_lifts));
-                self.start_lifts += 1;
-            }
-            return;
-        }
-        let mut outer = RECT::default();
-        unsafe {
-            if GetWindowRect(start, &mut outer).is_err() {
-                return;
-            }
-            let moved = SetWindowPos(
-                start,
-                HWND::default(),
-                outer.left,
-                outer.top - (seen.bottom - clear),
-                0,
-                0,
-                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-            );
-            log::write(&format!(
-                "Start menu: at {},{}-{},{}, dock top {}, lifting {} px (try {}): {}",
-                seen.left,
-                seen.top,
-                seen.right,
-                seen.bottom,
-                dock.top,
-                seen.bottom - clear,
-                self.start_lifts + 1,
-                if moved.is_ok() { "ok".to_string() } else { format!("{:?}", moved) }
-            ));
-        }
-        self.start_lifts += 1;
     }
 
     // ---- Show / hide ------------------------------------------------------
@@ -569,10 +524,6 @@ impl Dock {
             if self.hide_ticks >= HIDE_DELAY_TICKS {
                 self.set_target_hidden(true);
             }
-        }
-
-        if visible {
-            self.lift_start_menu(&dock);
         }
 
         // Hover highlight
@@ -856,6 +807,19 @@ impl Dock {
         if self.loader.is_none() {
             self.loader = Some(Loader::start(self.hwnd, WM_ICON_READY));
         }
+        // Packaged desktop apps (Photos) often have no icon in their exe, so the
+        // shell gives a generic one; their Apps-folder entry has the real one.
+        let packaged = match (&source, item.windows.first()) {
+            (Source::Path(p), Some(h)) if p.to_lowercase().contains("\\windowsapps\\") => {
+                let mut pid = 0u32;
+                unsafe {
+                    GetWindowThreadProcessId(*h, Some(&mut pid));
+                }
+                apps::process_app_id(pid)
+            }
+            _ => None,
+        };
+        let source = packaged.map(|id| Source::Path(format!("shell:AppsFolder\\{id}"))).unwrap_or(source);
         if let Some(loader) = &self.loader {
             self.icons_pending.insert(key.clone());
             loader.request(Request { key, source, size });
