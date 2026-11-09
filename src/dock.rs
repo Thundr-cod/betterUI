@@ -48,8 +48,9 @@ const POLL_MS: u32 = 100;
 const HIDE_DELAY_TICKS: u32 = 4; // wait 400 ms before hiding
 const MA_NOACTIVATE: isize = 3;
 
-const ICON: f32 = 34.0; // logical pixels
-const SLOT: f32 = 46.0;
+const ICON: f32 = 30.0; // logical pixels
+const SLOT: f32 = 42.0;
+const START_OVERHANG: f32 = 14.0;
 const PAD: f32 = 6.0;
 const SEP: f32 = 17.0; // room for the divider between pinned and other apps
 const MARGIN: f32 = 8.0; // gap between dock and screen bottom
@@ -428,7 +429,7 @@ impl Dock {
             let _ = GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
             if dx != self.dpi && dx > 0 {
                 self.dpi = dx;
-                if let Ok(f) = self.gfx.text_format(TEXT_FONT, 15.0 * self.scale(), 600) {
+                if let Ok(f) = self.gfx.text_format(TEXT_FONT, 13.0 * self.scale(), 600) {
                     self.letter_font = f;
                 }
                 self.bitmaps.clear(); // icon size changed
@@ -474,7 +475,9 @@ impl Dock {
             return;
         };
         let Some(seen) = apps::window_rect(start) else { return };
-        let clear = dock.top - (MARGIN * self.scale()).round() as i32;
+        // SearchHost draws the visible panel 14 px below its window's bottom
+        // edge (measured on the real PC at 100%), so clear that too.
+        let clear = dock.top - ((MARGIN + START_OVERHANG) * self.scale()).round() as i32;
         if seen.bottom <= clear {
             return;
         }
@@ -899,8 +902,9 @@ impl Dock {
 /// The Start button's icon: the Windows 11 logo, four square panes in a
 /// 2 x 2 grid, in the blue the Windows taskbar uses.
 fn draw_start_icon(frame: &crate::render::Frame, x: f32, y: f32, size: f32) {
-    // App icons fill most of their square, so the logo does too.
-    let grid = (size * 0.8).round();
+    // App icon artwork fills ~90% of its square (measured on the real PC); a
+    // solid logo reads larger, so it stays a touch under that.
+    let grid = (size * 0.88).round();
     let gap = (grid / 14.0).round().max(1.0);
     let pane = ((grid - gap) / 2.0).floor().max(2.0);
     let total = 2.0 * pane + gap;
