@@ -24,7 +24,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, GetCursorPos,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, GetCursorPos,
     GetForegroundWindow, GetWindowRect, IsIconic, KillTimer, LoadCursorW, PostMessageW, RegisterClassW,
     SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TrackPopupMenu, HWND_TOPMOST,
     IDC_ARROW, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE,
@@ -121,6 +121,17 @@ struct Dock {
     /// Running (unpinned) apps in the order they first appeared, so icons
     /// don't swap places when you switch between windows.
     running_order: Vec<String>,
+}
+
+/// Remove the dock right away when betterUI quits, instead of leaving it on
+/// screen while the taskbar restore settles (about 3 s).
+pub fn destroy() {
+    // Taken out first: DestroyWindow sends it messages, which must not find it borrowed.
+    if let Some(dock) = DOCK.with(|d| d.borrow_mut().take()) {
+        unsafe {
+            let _ = DestroyWindow(dock.hwnd);
+        }
+    }
 }
 
 /// Create the dock (if enabled in settings, or `forced` for the CI test).
