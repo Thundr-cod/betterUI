@@ -12,6 +12,8 @@ pub struct Config {
     /// Show the dock at the bottom of the screen.
     pub dock_enabled: bool,
     pub dock_mode: DockMode,
+    /// A Start button at the left end of the dock.
+    pub dock_start: bool,
     /// When the top bar hides (same choices as the dock; default: always shown).
     pub bar_mode: DockMode,
     /// Collect tray icons for the bar's tray dropdown.
@@ -40,7 +42,7 @@ impl DockMode {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { bar_opacity: 60, bar_blur: true, dock_enabled: true, dock_mode: DockMode::Smart, bar_mode: DockMode::Always, tray_enabled: true }
+        Self { bar_opacity: 60, bar_blur: true, dock_enabled: true, dock_mode: DockMode::Smart, dock_start: true, bar_mode: DockMode::Always, tray_enabled: true }
     }
 }
 
@@ -67,6 +69,7 @@ impl Config {
                 }
                 "bar_blur" => c.bar_blur = matches!(value, "true" | "on" | "yes" | "1"),
                 "dock_enabled" => c.dock_enabled = matches!(value, "true" | "on" | "yes" | "1"),
+                "dock_start" => c.dock_start = matches!(value, "true" | "on" | "yes" | "1"),
                 "tray_enabled" => c.tray_enabled = matches!(value, "true" | "on" | "yes" | "1"),
                 "bar_mode" => {
                     c.bar_mode = match value {
@@ -109,6 +112,8 @@ impl Config {
              dock_enabled = {}\n\
              # dock_mode: smart (hide when a window covers it), autohide, always\n\
              dock_mode = {}\n\
+             # dock_start: true/false, a Start button at the left end of the dock\n\
+             dock_start = {}\n\
              # bar_mode: always (keeps its strip), autohide, smart (hide when a window covers it)\n\
              bar_mode = {}\n\
              # tray_enabled: true/false, show the system tray dropdown on the bar\n\
@@ -117,6 +122,7 @@ impl Config {
             self.bar_blur,
             self.dock_enabled,
             self.dock_mode.as_str(),
+            self.dock_start,
             self.bar_mode.as_str(),
             self.tray_enabled
         );

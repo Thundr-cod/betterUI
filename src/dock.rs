@@ -62,6 +62,7 @@ const MENU_CLOSE: usize = 3;
 const MENU_MODE_SMART: usize = 11;
 const MENU_MODE_AUTOHIDE: usize = 12;
 const MENU_MODE_ALWAYS: usize = 13;
+const MENU_START_BUTTON: usize = 21;
 
 thread_local! {
     static DOCK: RefCell<Option<Dock>> = const { RefCell::new(None) };
@@ -106,6 +107,11 @@ struct Dock {
     covered: bool,
     ticks: u64,
     hovered: Option<usize>,
+    /// The Start button at the left end (setting `dock_start`), where it
+    /// was last drawn, and whether the mouse is over it.
+    start_button: bool,
+    start_slot: Option<R>,
+    start_hovered: bool,
     slots: Vec<R>,
     animating: bool,
     /// Running (unpinned) apps in the order they first appeared, so icons
@@ -193,6 +199,9 @@ fn create_inner(config: &Config, forced: bool) -> Result<()> {
             covered: false,
             ticks: 0,
             hovered: None,
+            start_button: config.dock_start,
+            start_slot: None,
+            start_hovered: false,
             slots: Vec::new(),
             animating: false,
             running_order: Vec::new(),
@@ -285,7 +294,9 @@ impl Dock {
             }
             WM_LBUTTONUP => {
                 let (x, y) = point_from(lp);
-                if let Some(i) = self.slot_at(x, y) {
+                if self.start_slot.map(|r| r.contains(x, y)).unwrap_or(false) {
+                    open_start(false);
+                } else if let Some(i) = self.slot_at(x, y) {
                     self.click(i);
                 }
                 Some(LRESULT(0))
@@ -301,6 +312,11 @@ impl Dock {
             }
             WM_RBUTTONUP => {
                 let (x, y) = point_from(lp);
+                if self.start_slot.map(|r| r.contains(x, y)).unwrap_or(false) {
+                    // Like the Windows Start button: the Win+X menu.
+                    open_start(true);
+                    return Some(LRESULT(0));
+                }
                 let i = self.slot_at(x, y);
                 self.context_menu(i);
                 Some(LRESULT(0))
@@ -382,7 +398,8 @@ impl Dock {
         let s = self.scale();
         let n = self.items.len().max(1) as f32;
         let has_sep = self.items.iter().any(|i| i.pinned) && self.items.iter().any(|i| !i.pinned);
-        2.0 * PAD * s + n * SLOT * s + if has_sep { SEP * s } else { 0.0 }
+        let start = if self.start_button { SLOT * s } else { 0.0 };
+        2.0 * PAD * s + start + n * SLOT * s + if has_sep { SEP * s } else { 0.0 }
     }
 
     /// Centre the dock at the bottom of the primary monitor.
@@ -487,15 +504,13 @@ impl Dock {
         }
 
         // Hover highlight
-        let hovered = if visible {
-            let lx = (cursor.x - self.base_x) as f32;
-            let ly = (cursor.y - (self.base_y + self.offset.round() as i32)) as f32;
-            self.slot_at(lx, ly)
-        } else {
-            None
-        };
-        if hovered != self.hovered {
+        let lx = (cursor.x - self.base_x) as f32;
+        let ly = (cursor.y - (self.base_y + self.offset.round() as i32)) as f32;
+        let hovered = if visible { self.slot_at(lx, ly) } else { None };
+        let start_hovered = visible && self.start_slot.map(|r| r.contains(lx, ly)).unwrap_or(false);
+        if hovered != self.hovered || start_hovered != self.start_hovered {
             self.hovered = hovered;
+            self.start_hovered = start_hovered;
             self.invalidate();
         }
     }
@@ -595,6 +610,9 @@ impl Dock {
             let _ = AppendMenuW(menu, MF_STRING | check(DockMode::Smart), MENU_MODE_SMART, w!("Hide dock when a window covers it"));
             let _ = AppendMenuW(menu, MF_STRING | check(DockMode::AutoHide), MENU_MODE_AUTOHIDE, w!("Auto-hide dock"));
             let _ = AppendMenuW(menu, MF_STRING | check(DockMode::Always), MENU_MODE_ALWAYS, w!("Always show dock"));
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());
+            let start_check = if self.start_button { MF_CHECKED } else { MF_UNCHECKED };
+            let _ = AppendMenuW(menu, MF_STRING | start_check, MENU_START_BUTTON, w!("Show Start button"));
 
             let mut pt = POINT::default();
             let _ = GetCursorPos(&mut pt);
@@ -632,6 +650,16 @@ impl Dock {
                         }
                     }
                 }
+                MENU_START_BUTTON => {
+                    self.start_button = !self.start_button;
+                    let on = self.start_button;
+                    Config::update(|c| c.dock_start = on);
+                    if !on {
+                        self.start_slot = None;
+                    }
+                    self.reposition();
+                    self.invalidate();
+                }
                 id @ (MENU_MODE_SMART | MENU_MODE_AUTOHIDE | MENU_MODE_ALWAYS) => {
                     let mode = match id {
                         MENU_MODE_AUTOHIDE => DockMode::AutoHide,
@@ -666,6 +694,16 @@ impl Dock {
         let mut slots = Vec::with_capacity(self.items.len());
         let mut x = PAD * s;
         let y = PAD * s;
+        self.start_slot = None;
+        if self.start_button {
+            let slot = R::new(x, y, SLOT * s, SLOT * s);
+            if self.start_hovered {
+                frame.round_rect(slot.x + 2.0 * s, slot.y, slot.w - 4.0 * s, slot.h, 10.0 * s, FAINT);
+            }
+            draw_start_icon(&frame, slot.x + (slot.w - icon_px) / 2.0, slot.y + 3.0 * s, icon_px);
+            self.start_slot = Some(slot);
+            x += SLOT * s;
+        }
         let mut prev_pinned = true;
         for i in 0..self.items.len() {
             let item = self.items[i].clone();
@@ -786,6 +824,55 @@ impl Dock {
             self.bitmaps.retain(|k, _| k.split_once('|').map(|(_, b)| live.contains(b)).unwrap_or(false));
         }
         self.invalidate();
+    }
+}
+
+/// The Start button's icon: a 3 x 3 grid of rounded tiles, the generic
+/// "all apps" launcher symbol, drawn in the dock's foreground colour.
+fn draw_start_icon(frame: &crate::render::Frame, x: f32, y: f32, size: f32) {
+    let grid = (size * 0.62).round();
+    let tile = (grid / 3.9).floor().max(2.0);
+    let gap = ((grid - 3.0 * tile) / 2.0).floor().max(1.0);
+    let total = 3.0 * tile + 2.0 * gap;
+    let left = (x + (size - total) / 2.0).round();
+    let top = (y + (size - total) / 2.0).round();
+    for row in 0..3 {
+        for col in 0..3 {
+            frame.round_rect(
+                left + col as f32 * (tile + gap),
+                top + row as f32 * (tile + gap),
+                tile,
+                tile,
+                tile * 0.3,
+                FG,
+            );
+        }
+    }
+}
+
+/// Open the Start menu (or with `power_menu`, the Win+X menu) by pressing
+/// the Windows key for the user: the same path as the keyboard, which
+/// works while betterUI keeps the Windows taskbar hidden.
+fn open_start(power_menu: bool) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_LWIN, VK_X,
+    };
+    let key = |vk: VIRTUAL_KEY, up: bool| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT { wVk: vk, dwFlags: if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) }, ..Default::default() },
+        },
+    };
+    let inputs: Vec<INPUT> = if power_menu {
+        vec![key(VK_LWIN, false), key(VK_X, false), key(VK_X, true), key(VK_LWIN, true)]
+    } else {
+        vec![key(VK_LWIN, false), key(VK_LWIN, true)]
+    };
+    unsafe {
+        let sent = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        if sent as usize != inputs.len() {
+            log::write("could not open Start from the dock (SendInput was blocked)");
+        }
     }
 }
 
