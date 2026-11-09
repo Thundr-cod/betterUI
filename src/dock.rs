@@ -25,9 +25,9 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, GetCursorPos,
-    GetForegroundWindow, IsIconic, KillTimer, LoadCursorW, PostMessageW, RegisterClassW,
+    GetForegroundWindow, GetWindowRect, IsIconic, KillTimer, LoadCursorW, PostMessageW, RegisterClassW,
     SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TrackPopupMenu, HWND_TOPMOST,
-    IDC_ARROW, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SWP_NOACTIVATE, SW_HIDE,
+    IDC_ARROW, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE,
     SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
     WM_APP, WM_CLOSE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONUP, WM_MBUTTONUP,
     WM_MOUSEACTIVATE, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_NOACTIVATE,
@@ -107,6 +107,8 @@ struct Dock {
     target_hidden: bool,
     hide_ticks: u32,
     covered: bool,
+    /// Times Start was moved above the dock since it opened.
+    start_lifts: u32,
     ticks: u64,
     hovered: Option<usize>,
     /// The Start button at the left end (setting `dock_start`), where it
@@ -199,6 +201,7 @@ fn create_inner(config: &Config, forced: bool) -> Result<()> {
             target_hidden: false,
             hide_ticks: 0,
             covered: false,
+            start_lifts: 0,
             ticks: 0,
             hovered: None,
             start_button: config.dock_start,
@@ -452,6 +455,55 @@ impl Dock {
         }
     }
 
+    /// Windows places Start above its own (hidden) taskbar, so it opens over
+    /// the dock. Move it up until its bottom clears the dock's top.
+    fn lift_start_menu(&mut self, dock: &RECT) {
+        let Some(start) = apps::start_menu_in_front() else {
+            self.start_lifts = 0;
+            return;
+        };
+        let Some(seen) = apps::window_rect(start) else { return };
+        let clear = dock.top - (MARGIN * self.scale()).round() as i32;
+        if seen.bottom <= clear {
+            return;
+        }
+        // Windows may put it back; stop after a few tries so it can't flicker.
+        if self.start_lifts >= 5 {
+            if self.start_lifts == 5 {
+                log::write(&format!("Start menu: moved back over the dock {} times, leaving it", self.start_lifts));
+                self.start_lifts += 1;
+            }
+            return;
+        }
+        let mut outer = RECT::default();
+        unsafe {
+            if GetWindowRect(start, &mut outer).is_err() {
+                return;
+            }
+            let moved = SetWindowPos(
+                start,
+                HWND::default(),
+                outer.left,
+                outer.top - (seen.bottom - clear),
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            log::write(&format!(
+                "Start menu: at {},{}-{},{}, dock top {}, lifting {} px (try {}): {}",
+                seen.left,
+                seen.top,
+                seen.right,
+                seen.bottom,
+                dock.top,
+                seen.bottom - clear,
+                self.start_lifts + 1,
+                if moved.is_ok() { "ok".to_string() } else { format!("{:?}", moved) }
+            ));
+        }
+        self.start_lifts += 1;
+    }
+
     // ---- Show / hide ------------------------------------------------------
 
     fn poll(&mut self) {
@@ -503,6 +555,10 @@ impl Dock {
             if self.hide_ticks >= HIDE_DELAY_TICKS {
                 self.set_target_hidden(true);
             }
+        }
+
+        if visible {
+            self.lift_start_menu(&dock);
         }
 
         // Hover highlight
