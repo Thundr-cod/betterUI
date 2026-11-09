@@ -55,6 +55,8 @@ const SEP: f32 = 17.0; // room for the divider between pinned and other apps
 const MARGIN: f32 = 8.0; // gap between dock and screen bottom
 /// The line between pinned apps and other running apps.
 const DIVIDER: Color = Color(1.0, 1.0, 1.0, 0.35);
+/// The Start button's logo colour (the Windows 11 taskbar's blue).
+const START_BLUE: Color = Color(0.0, 0.62, 1.0, 1.0);
 
 const MENU_NEW: usize = 1;
 const MENU_PIN: usize = 2;
@@ -827,24 +829,24 @@ impl Dock {
     }
 }
 
-/// The Start button's icon: a 3 x 3 grid of rounded tiles, the generic
-/// "all apps" launcher symbol, drawn in the dock's foreground colour.
+/// The Start button's icon: the Windows 11 logo, four square panes in a
+/// 2 x 2 grid, in the blue the Windows taskbar uses.
 fn draw_start_icon(frame: &crate::render::Frame, x: f32, y: f32, size: f32) {
-    let grid = (size * 0.62).round();
-    let tile = (grid / 3.9).floor().max(2.0);
-    let gap = ((grid - 3.0 * tile) / 2.0).floor().max(1.0);
-    let total = 3.0 * tile + 2.0 * gap;
+    let grid = (size * 0.56).round();
+    let gap = (grid / 14.0).round().max(1.0);
+    let pane = ((grid - gap) / 2.0).floor().max(2.0);
+    let total = 2.0 * pane + gap;
     let left = (x + (size - total) / 2.0).round();
     let top = (y + (size - total) / 2.0).round();
-    for row in 0..3 {
-        for col in 0..3 {
+    for row in 0..2 {
+        for col in 0..2 {
             frame.round_rect(
-                left + col as f32 * (tile + gap),
-                top + row as f32 * (tile + gap),
-                tile,
-                tile,
-                tile * 0.3,
-                FG,
+                left + col as f32 * (pane + gap),
+                top + row as f32 * (pane + gap),
+                pane,
+                pane,
+                pane * 0.08,
+                START_BLUE,
             );
         }
     }
