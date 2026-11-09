@@ -577,6 +577,22 @@ pub fn fullscreen_on(m: &RECT) -> bool {
     }
 }
 
+/// The Start menu's window, when it is open (it is then the foreground
+/// window, owned by StartMenuExperienceHost.exe).
+pub fn start_menu_in_front() -> Option<HWND> {
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.is_invalid() {
+            return None;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(fg, Some(&mut pid));
+        let exe = procinfo::process_path(pid)?.to_lowercase();
+        exe.ends_with("\\startmenuexperiencehost.exe").then_some(fg)
+    }
+}
+
 /// Does any app window overlap `area`?
 pub fn any_window_overlaps(area: &RECT) -> bool {
     app_windows().iter().filter_map(|w| window_rect(w.hwnd)).any(|r| {
