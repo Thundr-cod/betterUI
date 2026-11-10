@@ -52,8 +52,21 @@ fn path() -> std::path::PathBuf {
 
 impl Config {
     pub fn load() -> Self {
+        Self::load_checked().unwrap_or_default()
+    }
+
+    /// None when config.ini exists but can't be read (locked, bad encoding),
+    /// so callers don't save defaults over the user's settings.
+    fn load_checked() -> Option<Self> {
         let mut c = Config::default();
-        let Ok(text) = fs::read_to_string(path()) else { return c };
+        let text = match fs::read_to_string(path()) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(c),
+            Err(e) => {
+                crate::log::write(&format!("could not read config.ini: {e}"));
+                return None;
+            }
+        };
         for line in text.lines() {
             let line = line.trim();
             if line.starts_with('#') || line.starts_with(';') {
@@ -88,14 +101,19 @@ impl Config {
                 _ => {}
             }
         }
-        c
+        Some(c)
     }
 
     /// Load the saved settings, change them, save, and return the result.
     /// Used instead of saving a stale copy, so the bar and the dock never
     /// overwrite each other's settings.
     pub fn update(change: impl FnOnce(&mut Config)) -> Config {
-        let mut c = Config::load();
+        let Some(mut c) = Config::load_checked() else {
+            // Unreadable file: apply the change for now, but don't save over it.
+            let mut c = Config::default();
+            change(&mut c);
+            return c;
+        };
         change(&mut c);
         c.save();
         c
@@ -126,7 +144,7 @@ impl Config {
             self.bar_mode.as_str(),
             self.tray_enabled
         );
-        if let Err(e) = fs::write(path(), text) {
+        if let Err(e) = crate::log::save_file(&path(), &text) {
             crate::log::write(&format!("could not save config: {e}"));
         }
     }

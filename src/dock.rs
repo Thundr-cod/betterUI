@@ -125,8 +125,8 @@ struct Dock {
 /// Remove the dock right away when betterUI quits, instead of leaving it on
 /// screen while the taskbar restore settles (about 3 s).
 pub fn destroy() {
-    // Taken out first: DestroyWindow sends it messages, which must not find it borrowed.
     crate::start_menu::uninstall();
+    // Taken out first: DestroyWindow sends it messages, which must not find it borrowed.
     if let Some(dock) = DOCK.with(|d| d.borrow_mut().take()) {
         unsafe {
             let _ = DestroyWindow(dock.hwnd);

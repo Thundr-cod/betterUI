@@ -117,7 +117,7 @@ pub fn hide() {
     let current = get_state();
     if !path.exists() {
         // First hide since the last clean restore: remember the user's setting.
-        let _ = fs::write(&path, current.to_string());
+        let _ = crate::log::save_file(&path, &current.to_string());
     }
     if current & ABS_AUTOHIDE == 0 {
         set_state(current | ABS_AUTOHIDE);

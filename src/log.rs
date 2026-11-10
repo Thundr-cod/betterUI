@@ -13,6 +13,15 @@ pub fn data_dir() -> PathBuf {
     dir
 }
 
+/// Replace a file's contents in one step: write a temporary file, then move
+/// it over the old one, so a crash or power loss mid-write can't leave the
+/// file empty.
+pub fn save_file(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, contents)?;
+    fs::rename(&tmp, path)
+}
+
 pub fn write(line: &str) {
     let path = data_dir().join("log.txt");
     if let Ok(meta) = fs::metadata(&path) {
