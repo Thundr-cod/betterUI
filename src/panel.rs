@@ -105,6 +105,9 @@ struct Panel {
     devices: Vec<BtDevice>,
     brightness: Option<f32>,
     brightness_known: bool,
+    /// Work area of the monitor the panel last opened on; brightness is read
+    /// and set on that monitor.
+    monitor: RECT,
     volume: Option<Level>,
     accent: Color,
     opacity: f32,
@@ -173,6 +176,7 @@ fn ensure_created(notify: HWND) -> Result<()> {
         devices: Vec::new(),
         brightness: None,
         brightness_known: false,
+        monitor: RECT::default(),
         volume: None,
         accent: ui::accent(),
         opacity: 0.85,
@@ -248,10 +252,11 @@ impl Panel {
         }
         self.fetching = true;
         let want_devices = self.kind == Kind::Bluetooth;
+        let monitor = self.monitor;
         spawn_fetch(self.hwnd, self.tx.clone(), move || Fetched {
             radios: radios::states(),
             devices: if want_devices { Some(bluetooth::paired()) } else { None },
-            brightness: if with_brightness { Some(brightness::read()) } else { None },
+            brightness: if with_brightness { Some(brightness::read(monitor)) } else { None },
         });
     }
 
@@ -266,6 +271,12 @@ impl Panel {
         }
         self.accent = ui::accent();
         self.volume = self.audio.as_ref().and_then(|a| a.level(Flow::Output));
+        if work != self.monitor {
+            // Another monitor: its brightness is its own.
+            self.monitor = work;
+            self.brightness = None;
+            self.brightness_known = false;
+        }
         self.fetch(!self.brightness_known);
 
         let s = self.scale();
@@ -417,7 +428,7 @@ impl Panel {
         match id {
             SliderId::Brightness => {
                 self.brightness = Some(v);
-                brightness::set(v);
+                brightness::set(self.monitor, v);
             }
             SliderId::Volume => {
                 if let Some(a) = &self.audio {

@@ -26,12 +26,19 @@ pub struct Icons {
     cache: HashMap<String, Option<IWICBitmapSource>>,
     /// Windows whose missing icon has already been noted in log.txt.
     logged_misses: std::collections::HashSet<isize>,
+    /// Paths whose missing icon has already been noted (they're retried).
+    logged_path_misses: std::collections::HashSet<String>,
 }
 
 impl Icons {
     pub fn new() -> Result<Self> {
         let wic = unsafe { CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)? };
-        Ok(Self { wic, cache: HashMap::new(), logged_misses: std::collections::HashSet::new() })
+        Ok(Self {
+            wic,
+            cache: HashMap::new(),
+            logged_misses: std::collections::HashSet::new(),
+            logged_path_misses: std::collections::HashSet::new(),
+        })
     }
 
     /// A bitmap from pixels the icon loader produced on its thread.
@@ -52,10 +59,17 @@ impl Icons {
             return hit.clone();
         }
         let loaded = self.load_path(path, size).ok();
-        if loaded.is_none() {
-            crate::log::write(&format!("no icon for {path}"));
+        match &loaded {
+            // Only successes are kept, so the dock's retry really tries again.
+            Some(_) => {
+                self.cache.insert(key, loaded.clone());
+            }
+            None => {
+                if self.logged_path_misses.insert(key) {
+                    crate::log::write(&format!("no icon for {path}"));
+                }
+            }
         }
-        self.cache.insert(key, loaded.clone());
         loaded
     }
 

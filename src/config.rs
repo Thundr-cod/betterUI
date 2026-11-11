@@ -57,7 +57,7 @@ impl Config {
 
     /// None when config.ini exists but can't be read (locked, bad encoding),
     /// so callers don't save defaults over the user's settings.
-    fn load_checked() -> Option<Self> {
+    pub fn load_checked() -> Option<Self> {
         let mut c = Config::default();
         let text = match fs::read_to_string(path()) {
             Ok(text) => text,
@@ -107,16 +107,12 @@ impl Config {
     /// Load the saved settings, change them, save, and return the result.
     /// Used instead of saving a stale copy, so the bar and the dock never
     /// overwrite each other's settings.
-    pub fn update(change: impl FnOnce(&mut Config)) -> Config {
-        let Some(mut c) = Config::load_checked() else {
-            // Unreadable file: apply the change for now, but don't save over it.
-            let mut c = Config::default();
-            change(&mut c);
-            return c;
-        };
+    /// Callers keep their own copy up to date; an unreadable file is left as
+    /// it is rather than overwritten with defaults.
+    pub fn update(change: impl FnOnce(&mut Config)) {
+        let Some(mut c) = Config::load_checked() else { return };
         change(&mut c);
         c.save();
-        c
     }
 
     pub fn save(&self) {

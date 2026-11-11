@@ -464,7 +464,10 @@ impl Bar {
             }
             WM_CONFIG_CHANGED => {
                 let old_mode = self.config.bar_mode;
-                self.config = Config::load();
+                // Unreadable file: keep the current settings instead of defaults.
+                if let Some(c) = Config::load_checked() {
+                    self.config = c;
+                }
                 if self.config.bar_mode != old_mode {
                     self.apply_mode(old_mode);
                 }
@@ -848,13 +851,15 @@ impl Bar {
                 crate::autostart::set_enabled(!crate::autostart::is_enabled());
             } else if cmd == MENU_BLUR {
                 let blur = !self.config.bar_blur;
-                self.config = Config::update(|c| c.bar_blur = blur);
+                self.config.bar_blur = blur;
+                Config::update(|c| c.bar_blur = blur);
                 notify_config_changed();
                 backdrop::set_blur(self.hwnd, self.config.bar_blur);
                 let _ = InvalidateRect(self.hwnd, None, false);
             } else if cmd > MENU_OPACITY_BASE && cmd <= MENU_OPACITY_BASE + 100 {
                 let pct = (cmd - MENU_OPACITY_BASE) as u32;
-                self.config = Config::update(|c| c.bar_opacity = pct);
+                self.config.bar_opacity = pct;
+                Config::update(|c| c.bar_opacity = pct);
                 notify_config_changed();
                 let _ = InvalidateRect(self.hwnd, None, false);
             }

@@ -13,14 +13,15 @@ use windows::Win32::Devices::Display::{
     DestroyPhysicalMonitors, GetMonitorBrightness, GetNumberOfPhysicalMonitorsFromHMONITOR,
     GetPhysicalMonitorsFromHMONITOR, SetMonitorBrightness, PHYSICAL_MONITOR,
 };
-use windows::Win32::Foundation::POINT;
-use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTOPRIMARY};
+use windows::Win32::Foundation::RECT;
+use windows::Win32::Graphics::Gdi::{MonitorFromRect, MONITOR_DEFAULTTOPRIMARY};
 
 static DEMO_VALUE: Mutex<f32> = Mutex::new(0.7);
 
-fn with_primary_monitors<T>(f: impl FnOnce(&[PHYSICAL_MONITOR]) -> T) -> Option<T> {
+/// The physical monitors behind the display at `area` (screen coordinates).
+fn with_monitors<T>(area: RECT, f: impl FnOnce(&[PHYSICAL_MONITOR]) -> T) -> Option<T> {
     unsafe {
-        let hmon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+        let hmon = MonitorFromRect(&area, MONITOR_DEFAULTTOPRIMARY);
         let mut count = 0u32;
         GetNumberOfPhysicalMonitorsFromHMONITOR(hmon, &mut count).ok()?;
         if count == 0 {
@@ -34,12 +35,13 @@ fn with_primary_monitors<T>(f: impl FnOnce(&[PHYSICAL_MONITOR]) -> T) -> Option<
     }
 }
 
-/// Current brightness 0..1, or None if the monitor doesn't support DDC/CI.
-pub fn read() -> Option<f32> {
+/// Current brightness 0..1 of the monitor at `area`, or None if it doesn't
+/// support DDC/CI.
+pub fn read(area: RECT) -> Option<f32> {
     if crate::audio::demo() {
         return DEMO_VALUE.lock().ok().map(|v| *v);
     }
-    with_primary_monitors(|monitors| {
+    with_monitors(area, |monitors| {
         for m in monitors {
             let (mut min, mut cur, mut max) = (0u32, 0u32, 0u32);
             let ok = unsafe { GetMonitorBrightness(m.hPhysicalMonitor, &mut min, &mut cur, &mut max) };
@@ -52,14 +54,14 @@ pub fn read() -> Option<f32> {
     .flatten()
 }
 
-fn write(v: f32) {
+fn write(area: RECT, v: f32) {
     if crate::audio::demo() {
         if let Ok(mut d) = DEMO_VALUE.lock() {
             *d = v;
         }
         return;
     }
-    with_primary_monitors(|monitors| {
+    with_monitors(area, |monitors| {
         for m in monitors {
             let (mut min, mut cur, mut max) = (0u32, 0u32, 0u32);
             unsafe {
@@ -76,23 +78,24 @@ fn write(v: f32) {
     });
 }
 
-static WORKER: OnceLock<Mutex<Sender<f32>>> = OnceLock::new();
+static WORKER: OnceLock<Mutex<Sender<(RECT, f32)>>> = OnceLock::new();
 
-/// Set brightness without blocking. Only the latest value is applied.
-pub fn set(v: f32) {
+/// Set the brightness of the monitor at `area` without blocking. Only the
+/// latest value is applied.
+pub fn set(area: RECT, v: f32) {
     let sender = WORKER.get_or_init(|| {
-        let (tx, rx) = channel::<f32>();
+        let (tx, rx) = channel::<(RECT, f32)>();
         std::thread::spawn(move || {
-            while let Ok(mut v) = rx.recv() {
+            while let Ok(mut job) = rx.recv() {
                 while let Ok(newer) = rx.try_recv() {
-                    v = newer;
+                    job = newer;
                 }
-                write(v);
+                write(job.0, job.1);
             }
         });
         Mutex::new(tx)
     });
     if let Ok(tx) = sender.lock() {
-        let _ = tx.send(v);
+        let _ = tx.send((area, v));
     }
 }
