@@ -737,6 +737,38 @@ mod tests {
     }
 
     #[test]
+    fn updated_store_app_window_lands_on_its_pin() {
+        let pin = |path: &str, exe: &str| Pin {
+            path: path.into(),
+            name: String::new(),
+            exe: exe.into(),
+            squirrel_app: None,
+            family: package_family(exe).or_else(|| package_family(path)),
+        };
+        let old = "c:\\program files\\windowsapps\\claude_4.23118.0.0_x64__pzs8sxrjxfjjc\\app\\claude.exe";
+        let pins = [
+            pin("c:\\apps\\tool.exe", "c:\\apps\\tool.exe"),
+            pin(old, old),
+            pin("shell:AppsFolder\\Microsoft.WindowsNotepad_8wekyb3d8bbwe!App", ""),
+        ];
+        let claude = HWND(7 as *mut _);
+        let notepad = HWND(8 as *mut _);
+        let windows = [
+            AppWindow { hwnd: claude, exe: "c:\\program files\\windowsapps\\claude_4.23118.1.0_x64__pzs8sxrjxfjjc\\app\\claude.exe".into() },
+            AppWindow { hwnd: notepad, exe: "c:\\program files\\windowsapps\\microsoft.windowsnotepad_11.2608.2.0_x64__8wekyb3d8bbwe\\notepad\\notepad.exe".into() },
+        ];
+        let items = dock_items(&pins, &windows);
+        // Pins come first, in pin order (dock::upgrade_store_pins relies on it),
+        // and the updated apps' windows land on them: no extra icons.
+        assert_eq!(items.len(), 3);
+        for (item, p) in items.iter().zip(&pins) {
+            assert_eq!(item.launch.as_deref(), Some(p.path.as_str()));
+        }
+        assert_eq!(items[1].windows, vec![claude]);
+        assert_eq!(items[2].windows, vec![notepad]);
+    }
+
+    #[test]
     fn squirrel_pin_matches_only_its_app() {
         let pin = Pin {
             path: "Discord.lnk".into(),

@@ -26,7 +26,8 @@ pub fn write(line: &str) {
     let path = data_dir().join("log.txt");
     if let Ok(meta) = fs::metadata(&path) {
         if meta.len() > 256 * 1024 {
-            let _ = fs::remove_file(&path);
+            // Keep the previous log for diagnosis instead of deleting it.
+            let _ = fs::rename(&path, data_dir().join("log.old.txt"));
         }
     }
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
