@@ -53,7 +53,7 @@ Found while testing on a real Windows 11 PC (v0.0.801 to v0.0.805) and not fixed
 
 | Issue | Notes |
 | --- | --- |
-| **NVIDIA app's tray icon never appears** | Other apps' icons arrive (Steam, Claude, Discord, Proton, Windows Security), but no NVIDIA program ever sends betterUI a tray message, even when betterUI starts at sign-in (v0.0.805). The icon also doesn't come back in Windows' own tray when the NVIDIA app is restarted, so it belongs to a background process started at sign-in. Next step: read the icons Explorer already holds, through Windows' undocumented tray-notify interface. |
+| **NVIDIA app's tray icon never appears** | Other apps' icons arrive (Steam, Claude, Discord, Proton, Windows Security), but no NVIDIA program ever sends betterUI a tray message, even when betterUI starts at sign-in (v0.0.805). The icon also doesn't come back in Windows' own tray when the NVIDIA app is restarted, so it belongs to a background process started at sign-in. Reading the icons Explorer holds through Windows' undocumented tray-notify interface (`ITrayNotify`, v0.0.809–v0.0.907) always returned 0 icons on Windows 11, so that code was removed in v0.0.908. Not tried yet: a newer Windows 11 variant of that interface, or finding NVIDIA's icon owner from `HKCU\Control Panel\NotifyIconSettings`. |
 | **Win+N does nothing** | The notification center doesn't open while betterUI has the Windows taskbar hidden. Win+A and the other shortcuts work. Possible fix: open it with the `ms-actioncenter:` link, from Win+N or from clicking the bar's clock. |
 | **Code signing** | The SignPath Foundation application was not approved, so builds stay unsigned and Smart App Control blocks them. Pick another way to sign the exe. |
 

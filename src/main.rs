@@ -26,7 +26,6 @@ mod sysinfo;
 mod taskbar;
 mod tray;
 mod tray_flyout;
-mod tray_explorer;
 mod ui;
 mod watchdog;
 

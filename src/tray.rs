@@ -49,10 +49,6 @@ const COPYDATA_TRAY: usize = 1;
 
 const TIMER_TOPMOST: usize = 1; // keep our window ahead of Explorer's (every 1 s)
 const TIMER_REBROADCAST: usize = 2; // ask apps to re-send their icons again
-const TIMER_EXPLORER_LIST: usize = 3; // compare with the icons Explorer holds
-const TIMER_EXPLORER_FALLBACK: usize = 4; // show Explorer's copy of icons that never arrived
-const TIMER_EXPLORER_TIMEOUT: usize = 5; // note it if Explorer never answers
-const WM_EXPLORER_ICONS: u32 = WM_USER + 0x7F0; // the list is ready (from a worker thread)
 
 /// The 32-bit-compatible NOTIFYICONDATAW layout used on the wire, so 32-bit
 /// and 64-bit apps send the same thing. Handles are 32-bit values.
@@ -96,10 +92,6 @@ pub struct TrayIcon {
     pub icon: Option<HICON>,
     pub tip: String,
     pub hidden: bool,
-    /// For an icon only Explorer had (the app never sent it to betterUI):
-    /// the app's exe, opened on click since there's no way to pass the
-    /// click on to the app.
-    pub launch: Option<String>,
 }
 
 impl TrayIcon {
@@ -116,8 +108,9 @@ struct Host {
     icons: Vec<TrayIcon>,
     taskbar_created: u32,
     last_broadcast: Option<Instant>,
-    /// Icons Explorer has that betterUI was missing, asked for directly.
-    explorer_pending: Vec<crate::tray_explorer::ExplorerIcon>,
+    /// Whether ours was the front "Shell_TrayWnd" at the last check, so only
+    /// changes get logged (on some PCs Explorer takes the spot every second).
+    was_front: bool,
     /// Told when the icon list changes (the dropdown).
     on_change: Option<fn()>,
 }
@@ -205,7 +198,7 @@ fn start_inner(on_change: fn()) -> Result<()> {
         HOST_HWND.store(hwnd.0 as isize, std::sync::atomic::Ordering::SeqCst);
         let taskbar_created = RegisterWindowMessageW(w!("TaskbarCreated"));
         HOST.with(|h| {
-            *h.borrow_mut() = Some(Host { icons: Vec::new(), taskbar_created, last_broadcast: None, explorer_pending: Vec::new(), on_change: Some(on_change) })
+            *h.borrow_mut() = Some(Host { icons: Vec::new(), taskbar_created, last_broadcast: None, was_front: true, on_change: Some(on_change) })
         });
         bring_to_front(hwnd);
         SetTimer(hwnd, TIMER_TOPMOST, 1000, None);
@@ -213,8 +206,6 @@ fn start_inner(on_change: fn()) -> Result<()> {
         broadcast_taskbar_created(taskbar_created);
         // Some apps answer slowly or miss the first request: ask once more.
         SetTimer(hwnd, TIMER_REBROADCAST, 4000, None);
-        // Then compare with Explorer's own list, once apps have answered.
-        SetTimer(hwnd, TIMER_EXPLORER_LIST, 7000, None);
     }
     Ok(())
 }
@@ -332,7 +323,6 @@ fn demo_icons() -> Vec<TrayIcon> {
             icon: unsafe { LoadIconW(None, *id).ok() },
             tip: tip.to_string(),
             hidden: false,
-            launch: None,
         })
         .collect()
 }
@@ -345,19 +335,6 @@ pub fn click(icon: &TrayIcon, right: bool, x: i32, y: i32) {
     };
     const NIN_SELECT: u32 = WM_USER;
     if icon.callback_message == 0 || icon.owner.is_invalid() {
-        // An icon only Explorer had: open its app instead.
-        if let (Some(exe), false) = (&icon.launch, right) {
-            unsafe {
-                let _ = windows::Win32::UI::Shell::ShellExecuteW(
-                    None,
-                    w!("open"),
-                    &windows::core::HSTRING::from(exe.as_str()),
-                    None,
-                    None,
-                    windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
-                );
-            }
-        }
         return;
     }
     unsafe {
@@ -406,22 +383,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_TIMER => {
             match wp.0 {
                 TIMER_TOPMOST => {
-                    if !is_front(hwnd) {
-                        debug("Explorer's taskbar was in front of ours; taking the front spot back");
+                    let front = is_front(hwnd);
+                    let was = HOST.with(|h| {
+                        h.try_borrow_mut().ok().and_then(|mut g| g.as_mut().map(|x| std::mem::replace(&mut x.was_front, front)))
+                    });
+                    if !front {
+                        if was == Some(true) {
+                            debug("Explorer's taskbar is in front of ours; taking the front spot back (logged once until it changes)");
+                        }
                         bring_to_front(hwnd);
+                    } else if was == Some(false) {
+                        debug("ours is the front taskbar window again");
                     }
-                }
-                TIMER_EXPLORER_LIST => {
-                    let _ = KillTimer(hwnd, TIMER_EXPLORER_LIST);
-                    request_explorer_icons(hwnd);
-                }
-                TIMER_EXPLORER_TIMEOUT => {
-                    let _ = KillTimer(hwnd, TIMER_EXPLORER_TIMEOUT);
-                    debug("no answer from Explorer's tray list after 5 s");
-                }
-                TIMER_EXPLORER_FALLBACK => {
-                    let _ = KillTimer(hwnd, TIMER_EXPLORER_FALLBACK);
-                    add_explorer_fallbacks();
                 }
                 TIMER_REBROADCAST => {
                     let _ = KillTimer(hwnd, TIMER_REBROADCAST);
@@ -436,10 +409,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             return LRESULT(0);
         }
-        WM_EXPLORER_ICONS => {
-            on_explorer_icons(hwnd);
-            return LRESULT(0);
-        }
         _ => {}
     }
     let taskbar_created = HOST.with(|h| h.try_borrow().ok().and_then(|g| g.as_ref().map(|x| (x.taskbar_created, x.last_broadcast))));
@@ -452,7 +421,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if !ours {
                 debug("TaskbarCreated from Explorer (Explorer restarted?)");
                 SetTimer(hwnd, TIMER_REBROADCAST, 2000, None);
-                SetTimer(hwnd, TIMER_EXPLORER_LIST, 5000, None);
             }
             return LRESULT(0);
         }
@@ -479,17 +447,24 @@ fn forward(ours: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
     Some(LRESULT(result as isize))
 }
 
-fn record(cds: &COPYDATASTRUCT) {
-    let size = std::mem::size_of::<TrayMessage>();
-    let n = (cds.cbData as usize).min(size);
+/// Read a tray message another app sent. It's outside data: never read more
+/// than it says it has, nor more than our struct holds.
+fn parse(cds: &COPYDATASTRUCT) -> Option<TrayMessage> {
+    let n = (cds.cbData as usize).min(std::mem::size_of::<TrayMessage>());
     if cds.lpData.is_null() || n < 8 + 24 {
-        return;
+        return None;
     }
     // Copy into a zeroed, aligned struct (older apps send a shorter one).
     let mut data: TrayMessage = unsafe { std::mem::zeroed() };
     unsafe {
         std::ptr::copy_nonoverlapping(cds.lpData as *const u8, &mut data as *mut TrayMessage as *mut u8, n);
     }
+    Some(data)
+}
+
+fn record(cds: &COPYDATASTRUCT) {
+    let size = std::mem::size_of::<TrayMessage>();
+    let Some(data) = parse(cds) else { return };
     let message = data.message;
     let nid = data.nid;
     let kind = match message {
@@ -521,7 +496,6 @@ fn record(cds: &COPYDATASTRUCT) {
                             icon: None,
                             tip: String::new(),
                             hidden: false,
-                            launch: None,
                         });
                         host.icons.len() - 1
                     }
@@ -602,149 +576,34 @@ fn record(cds: &COPYDATASTRUCT) {
     }
 }
 
-// ---- Icons only Explorer has (tray_explorer.rs) ----
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-struct SendIcons(Vec<crate::tray_explorer::ExplorerIcon>);
-// The icon handles are plain USER handles, usable from any thread.
-unsafe impl Send for SendIcons {}
-
-// Filled by the worker thread; read (and logged) on the tray window's thread,
-// since the debug log lives there.
-static EXPLORER_ICONS: std::sync::Mutex<Option<std::result::Result<SendIcons, String>>> = std::sync::Mutex::new(None);
-
-/// Read Explorer's list on a worker thread (it waits on Explorer), then
-/// post the result back to the tray window.
-fn request_explorer_icons(hwnd: HWND) {
-    debug("reading the icons Explorer's tray holds");
-    unsafe {
-        SetTimer(hwnd, TIMER_EXPLORER_TIMEOUT, 5000, None);
+    fn cds(buf: &mut [u8], claimed: usize) -> COPYDATASTRUCT {
+        COPYDATASTRUCT { dwData: COPYDATA_TRAY, cbData: claimed as u32, lpData: buf.as_mut_ptr() as *mut _ }
     }
-    let target = hwnd.0 as isize;
-    std::thread::spawn(move || {
-        let result = crate::tray_explorer::list().map(SendIcons);
-        if let Ok(mut slot) = EXPLORER_ICONS.lock() {
-            *slot = Some(result);
-        }
-        unsafe {
-            let _ = PostMessageW(HWND(target as *mut _), WM_EXPLORER_ICONS, WPARAM(0), LPARAM(0));
-        }
-    });
-}
 
-fn known(host: &Host, e: &crate::tray_explorer::ExplorerIcon) -> bool {
-    host.icons.iter().any(|i| match (e.guid, i.guid) {
-        (Some(a), Some(b)) => a == b,
-        _ => i.owner.0 as isize == e.hwnd && i.uid == e.uid,
-    })
-}
+    #[test]
+    fn parse_rejects_short_and_caps_long_messages() {
+        // Too short for the fields betterUI reads: ignored.
+        let mut short = [0u8; 20];
+        assert!(parse(&cds(&mut short, 20)).is_none());
 
-fn file_name(path: &str) -> String {
-    std::path::Path::new(path).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default()
-}
+        // An old, short NOTIFYICONDATA: the rest of the struct stays zero.
+        let mut old = [0u8; 40];
+        old[4..8].copy_from_slice(&NIM_ADD.to_le_bytes());
+        old[16..20].copy_from_slice(&7u32.to_le_bytes()); // uid
+        old[20..24].copy_from_slice(&NIF_TIP.to_le_bytes()); // flags
+        let m = parse(&cds(&mut old, 40)).unwrap();
+        let (message, uid, flags, tip0) = (m.message, m.nid.uid, m.nid.flags, m.nid.tip[0]);
+        assert_eq!((message, uid, flags, tip0), (NIM_ADD, 7, NIF_TIP, 0));
 
-/// Explorer's list arrived: for each icon betterUI is missing, send the
-/// app's icon window "TaskbarCreated" directly (a broadcast doesn't reach
-/// message-only windows), and give it two seconds to send its icon.
-fn on_explorer_icons(hwnd: HWND) {
-    unsafe {
-        let _ = KillTimer(hwnd, TIMER_EXPLORER_TIMEOUT);
-    }
-    let items = match EXPLORER_ICONS.lock().ok().and_then(|mut s| s.take()) {
-        Some(Ok(SendIcons(items))) => items,
-        Some(Err(e)) => {
-            debug(&format!("could not read Explorer's tray icons: {e}"));
-            return;
-        }
-        None => return,
-    };
-    debug(&format!("Explorer's tray holds {} icons", items.len()));
-    let mut missing = Vec::new();
-    let tc = HOST.with(|h| {
-        let Ok(mut g) = h.try_borrow_mut() else { return None };
-        let host = g.as_mut()?;
-        for e in items {
-            let have = known(host, &e);
-            debug(&format!(
-                "Explorer has {:24} uid={} guid={} known={have} tip={:?}",
-                file_name(&e.exe),
-                e.uid,
-                e.guid.is_some(),
-                e.tip
-            ));
-            if have {
-                if let Some(icon) = e.icon {
-                    unsafe {
-                        let _ = DestroyIcon(icon);
-                    }
-                }
-            } else {
-                missing.push(e.clone());
-                host.explorer_pending.push(e);
-            }
-        }
-        Some(host.taskbar_created)
-    });
-    let Some(tc) = tc else { return };
-    if missing.is_empty() {
-        return;
-    }
-    for e in &missing {
-        let sent = unsafe { PostMessageW(HWND(e.hwnd as *mut _), tc, WPARAM(0), LPARAM(0)) };
-        debug(&format!(
-            "asked {} directly to re-send its icon: {}",
-            file_name(&e.exe),
-            match sent {
-                Ok(()) => "sent".to_string(),
-                Err(err) => format!("blocked ({err})"),
-            }
-        ));
-    }
-    unsafe {
-        SetTimer(hwnd, TIMER_EXPLORER_FALLBACK, 2000, None);
-    }
-}
-
-/// Icons that still haven't arrived: show Explorer's copy (its picture and
-/// tooltip); clicking opens the app.
-fn add_explorer_fallbacks() {
-    let changed = HOST.with(|h| {
-        let Ok(mut g) = h.try_borrow_mut() else { return false };
-        let Some(host) = g.as_mut() else { return false };
-        let pending = std::mem::take(&mut host.explorer_pending);
-        let mut changed = false;
-        for e in pending {
-            if known(host, &e) {
-                debug(&format!("{} sent its icon after being asked directly", file_name(&e.exe)));
-                if let Some(icon) = e.icon {
-                    unsafe {
-                        let _ = DestroyIcon(icon);
-                    }
-                }
-                continue;
-            }
-            debug(&format!("{} never sent its icon; showing Explorer's copy", file_name(&e.exe)));
-            host.icons.push(TrayIcon {
-                owner: HWND(e.hwnd as *mut _),
-                uid: e.uid,
-                guid: e.guid,
-                callback_message: 0,
-                version: 0,
-                icon: e.icon,
-                tip: e.tip.clone(),
-                hidden: false,
-                launch: Some(e.exe.clone()).filter(|x| !x.is_empty()),
-            });
-            changed = true;
-        }
-        if changed {
-            dump_icons(&host.icons);
-        }
-        changed
-    });
-    if changed {
-        let cb = HOST.with(|h| h.try_borrow().ok().and_then(|g| g.as_ref().and_then(|x| x.on_change)));
-        if let Some(cb) = cb {
-            cb();
-        }
+        // Longer than the struct (newer Windows): only the struct's size is read.
+        let size = std::mem::size_of::<TrayMessage>();
+        let mut long = vec![0xAB_u8; size + 512];
+        let m = parse(&cds(&mut long, size + 512)).unwrap();
+        let magic = m.magic;
+        assert_eq!(magic, 0xABAB_ABAB);
     }
 }

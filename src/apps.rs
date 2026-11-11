@@ -464,10 +464,16 @@ pub fn load_pins() -> Vec<Pin> {
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .collect(),
-        Err(_) => {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let imported = taskbar_pins();
             save_pin_paths(&imported);
             imported
+        }
+        Err(e) => {
+            // Locked or unreadable: don't replace the user's pins with the taskbar's.
+            crate::log::write(&format!("could not read dock_pins.txt: {e}"));
+            PINS_UNREADABLE.store(true, std::sync::atomic::Ordering::Relaxed);
+            Vec::new()
         }
     };
     let pins: Vec<Pin> = paths.iter().map(|p| pin_from_path(p)).collect();
@@ -480,13 +486,21 @@ pub fn load_pins() -> Vec<Pin> {
     pins
 }
 
+/// Set when dock_pins.txt exists but couldn't be read: the dock then starts
+/// with no pins, and saving that would wipe the user's list.
+static PINS_UNREADABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn save_pin_paths(paths: &[String]) {
+    if PINS_UNREADABLE.load(std::sync::atomic::Ordering::Relaxed) {
+        crate::log::write("not saving dock pins: dock_pins.txt couldn't be read at start");
+        return;
+    }
     let mut text = String::from("# Apps pinned to the betterUI dock, one shortcut or exe path per line.\n");
     for p in paths {
         text.push_str(p);
         text.push('\n');
     }
-    if let Err(e) = fs::write(pins_file(), text) {
+    if let Err(e) = crate::log::save_file(&pins_file(), &text) {
         crate::log::write(&format!("could not save dock pins: {e}"));
     }
 }

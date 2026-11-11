@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use windows::Win32::Foundation::{HMODULE, HWND, RECT};
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowRect, GetWindowThreadProcessId, SetWindowPos, EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND,
+    GetAncestor, GetWindowRect, GetWindowThreadProcessId, SetWindowPos, GA_ROOT, EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND,
     OBJID_WINDOW, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, WINEVENT_OUTOFCONTEXT,
 };
 
@@ -21,8 +21,8 @@ thread_local! {
     /// (bottom edge Start's window must end at, monitor left, monitor right).
     static TARGET: Cell<Option<(i32, i32, i32)>> = const { Cell::new(None) };
     static HOOKS: RefCell<Vec<HWINEVENTHOOK>> = const { RefCell::new(Vec::new()) };
-    /// pid -> is it the process that draws Start.
-    static HOSTS: RefCell<HashMap<u32, bool>> = RefCell::new(HashMap::new());
+    /// window -> does it belong to the process that draws Start.
+    static HOSTS: RefCell<HashMap<isize, bool>> = RefCell::new(HashMap::new());
     /// Moves since the foreground last changed, so a tug-of-war with Windows can't run forever.
     static MOVES: Cell<u32> = const { Cell::new(0) };
 }
@@ -74,18 +74,30 @@ unsafe extern "system" fn on_event(_: HWINEVENTHOOK, event: u32, hwnd: HWND, obj
     if event == EVENT_SYSTEM_FOREGROUND {
         MOVES.with(|m| m.set(0));
     }
-    if hwnd.is_invalid() || object != OBJID_WINDOW.0 || child != 0 {
+    // Top-level windows only: a child's position is relative to its parent,
+    // so moving it with screen coordinates would push it out of Start.
+    if hwnd.is_invalid() || object != OBJID_WINDOW.0 || child != 0 || GetAncestor(hwnd, GA_ROOT) != hwnd {
         return;
     }
     let Some((bottom, left, right)) = TARGET.with(|t| t.get()) else { return };
-    let mut pid = 0u32;
-    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    // Keyed by window, not process id: ids get reused, so a restarted
+    // SearchHost could inherit a cached "not Start".
     let host = HOSTS.with(|h| {
         let mut h = h.borrow_mut();
         if h.len() > 512 {
-            h.clear(); // pids get reused; a fresh look now and then is cheap
+            h.clear(); // window handles get reused too; a fresh look now and then is cheap
         }
-        *h.entry(pid).or_insert_with(|| procinfo::process_path(pid).map(|p| is_start_host(&p)).unwrap_or(false))
+        *h.entry(hwnd.0 as isize).or_insert_with(|| {
+            // The panel itself is a CoreWindow; its power menu, right-click
+            // menus and tooltips are separate windows (seen on the real PC
+            // being dragged down to the dock) and must be left alone.
+            if crate::apps::class_name(hwnd) != "Windows.UI.Core.CoreWindow" {
+                return false;
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            procinfo::process_path(pid).map(|p| is_start_host(&p)).unwrap_or(false)
+        })
     });
     if !host {
         return;
