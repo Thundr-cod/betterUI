@@ -88,6 +88,12 @@ unsafe extern "system" fn on_event(_: HWINEVENTHOOK, event: u32, hwnd: HWND, obj
             h.clear(); // window handles get reused too; a fresh look now and then is cheap
         }
         *h.entry(hwnd.0 as isize).or_insert_with(|| {
+            // The panel itself is a CoreWindow; its power menu, right-click
+            // menus and tooltips are separate windows (seen on the real PC
+            // being dragged down to the dock) and must be left alone.
+            if crate::apps::class_name(hwnd) != "Windows.UI.Core.CoreWindow" {
+                return false;
+            }
             let mut pid = 0u32;
             GetWindowThreadProcessId(hwnd, Some(&mut pid));
             procinfo::process_path(pid).map(|p| is_start_host(&p)).unwrap_or(false)
