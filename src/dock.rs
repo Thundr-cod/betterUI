@@ -362,12 +362,39 @@ impl Dock {
         log::write(&format!("dock slow: {step} took {ms} ms ({} items)", self.items.len()));
     }
 
+    /// Pins saved as a Store app's versioned exe path (older betterUI) break
+    /// when the app updates. Once the app is running, re-save them by its
+    /// AppUserModelID. `items` starts with the pins, in pin order.
+    fn upgrade_store_pins(&mut self, items: &[DockItem]) {
+        let mut changed = false;
+        for (pin, item) in self.pins.iter_mut().zip(items) {
+            if pin.path.to_lowercase().starts_with("shell:") || apps::package_family(&pin.path).is_none() {
+                continue;
+            }
+            let Some(&hwnd) = item.windows.first() else { continue };
+            let mut pid = 0u32;
+            unsafe {
+                GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            }
+            if let Some(id) = apps::process_app_id(pid) {
+                log::write(&format!("dock pin moved to the Store app id {id}"));
+                *pin = apps::pin_for_app_id(&id);
+                changed = true;
+            }
+        }
+        if changed {
+            apps::save_pins(&self.pins);
+        }
+    }
+
     fn refresh_items(&mut self) {
         let started = std::time::Instant::now();
         let windows = apps::app_windows();
         self.note_slow("listing windows", started);
         let started = std::time::Instant::now();
-        let items = self.stable_order(apps::dock_items(&self.pins, &windows));
+        let items = apps::dock_items(&self.pins, &windows);
+        self.upgrade_store_pins(&items);
+        let items = self.stable_order(items);
         self.note_slow("matching windows to pins", started);
         let fg = unsafe { GetForegroundWindow() };
         let signature: String = items
@@ -659,7 +686,18 @@ impl Dock {
                             // Pin the exe that starts the app, not a helper
                             // that only draws its windows (Steam).
                             let launcher = apps::launcher_for(&item.windows);
-                            self.pins.push(apps::pin_for_exe(launcher.as_deref().unwrap_or(path)));
+                            let exe = launcher.as_deref().unwrap_or(path);
+                            // Store apps by their AppUserModelID: their exe
+                            // path changes with every update.
+                            let app_id = apps::package_family(exe).and_then(|_| {
+                                let mut pid = 0u32;
+                                GetWindowThreadProcessId(*item.windows.first()?, Some(&mut pid));
+                                apps::process_app_id(pid)
+                            });
+                            self.pins.push(match app_id {
+                                Some(id) => apps::pin_for_app_id(&id),
+                                None => apps::pin_for_exe(exe),
+                            });
                         }
                         apps::save_pins(&self.pins);
                         self.refresh_items();

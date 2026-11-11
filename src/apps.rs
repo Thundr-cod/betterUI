@@ -146,6 +146,38 @@ pub struct Pin {
     /// For Squirrel-installed apps (Discord, Slack …): the exe name the
     /// pinned `Update.exe --processStart <name>` starts, lower-case.
     pub squirrel_app: Option<String>,
+    /// For Store-installed apps: the package family (name + publisher), which
+    /// stays the same across updates while the versioned folder changes.
+    pub family: Option<String>,
+}
+
+/// The package family of a Store app, from its install path
+/// (`…\WindowsApps\Name_1.2.3.0_x64__publisher\…`) or its Apps-folder
+/// address (`shell:AppsFolder\Name_publisher!App`), lower-case.
+pub fn package_family(path: &str) -> Option<String> {
+    let lower = path.to_lowercase();
+    if let Some(id) = lower.strip_prefix("shell:appsfolder\\") {
+        return id.split_once('!').map(|(family, _)| family.to_string());
+    }
+    let (_, rest) = lower.split_once("\\windowsapps\\")?;
+    let folder = rest.split('\\').next()?;
+    // Package names can't contain '_', so the name is the first part and the
+    // publisher id the last.
+    let parts: Vec<&str> = folder.split('_').collect();
+    (parts.len() >= 5).then(|| format!("{}_{}", parts[0], parts[parts.len() - 1]))
+}
+
+/// The name the shell shows for a path or `shell:AppsFolder\…` address.
+fn shell_display_name(path: &str) -> Option<String> {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{IShellItem, SHCreateItemFromParsingName, SIGDN_NORMALDISPLAY};
+    unsafe {
+        let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(path), None).ok()?;
+        let name = item.GetDisplayName(SIGDN_NORMALDISPLAY).ok()?;
+        let s = name.to_string().ok();
+        CoTaskMemFree(Some(name.0 as *const _));
+        s.filter(|s| !s.is_empty())
+    }
 }
 
 fn pins_file() -> PathBuf {
@@ -425,6 +457,11 @@ pub fn launcher_for(windows: &[HWND]) -> Option<String> {
 
 fn pin_from_path(path: &str) -> Pin {
     let lower = path.to_lowercase();
+    if lower.starts_with("shell:appsfolder\\") {
+        let name = shell_display_name(path)
+            .unwrap_or_else(|| path.rsplit(['\\', '!']).next().unwrap_or(path).to_string());
+        return Pin { path: path.to_string(), name, exe: String::new(), squirrel_app: None, family: package_family(path) };
+    }
     let (name, exe) = if lower.ends_with(".lnk") {
         let name = Path::new(path)
             .file_stem()
@@ -432,11 +469,18 @@ fn pin_from_path(path: &str) -> Pin {
             .unwrap_or_default();
         let (exe, args) = shortcut_target(path);
         let squirrel_app = squirrel_app(&exe, &args);
-        return Pin { path: path.to_string(), name, exe, squirrel_app };
+        let family = package_family(&exe);
+        return Pin { path: path.to_string(), name, exe, squirrel_app, family };
     } else {
         (procinfo::app_name(path), lower)
     };
-    Pin { path: path.to_string(), name, exe, squirrel_app: None }
+    let family = package_family(&exe);
+    Pin { path: path.to_string(), name, exe, squirrel_app: None, family }
+}
+
+/// A pin for a Store app by its AppUserModelID, which survives app updates.
+pub fn pin_for_app_id(id: &str) -> Pin {
+    pin_from_path(&format!("shell:AppsFolder\\{id}"))
 }
 
 /// The user's taskbar pins, used to fill the dock the first time.
@@ -458,7 +502,15 @@ fn taskbar_pins() -> Vec<String> {
 
 pub fn load_pins() -> Vec<Pin> {
     let file = pins_file();
-    let paths: Vec<String> = match fs::read_to_string(&file) {
+    // A lock (an antivirus scan at sign-in) usually lasts a moment: try twice.
+    let read = fs::read_to_string(&file).or_else(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            return Err(e);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        fs::read_to_string(&file)
+    });
+    let paths: Vec<String> = match read {
         Ok(text) => text
             .lines()
             .map(|l| l.trim().to_string())
@@ -536,6 +588,14 @@ pub fn dock_items(pins: &[Pin], windows: &[AppWindow]) -> Vec<DockItem> {
             if let Some(item) = items.iter_mut().find(|i| i.exe == key_exe) {
                 item.windows.push(w.hwnd);
                 continue;
+            }
+            // A Store app: match by package, since an update moves it to a
+            // new versioned folder.
+            if let Some(family) = package_family(&key_exe) {
+                if let Some(i) = pins.iter().position(|p| p.family.as_deref() == Some(family.as_str())) {
+                    items[i].windows.push(w.hwnd);
+                    continue;
+                }
             }
             // A window from another exe of a pinned app's install, e.g.
             // Discord.exe under a pin to Discord's Update.exe launcher, or
@@ -666,12 +726,56 @@ mod tests {
     }
 
     #[test]
+    fn store_app_family_survives_updates() {
+        let old = "c:\\program files\\windowsapps\\claude_4.23118.0.0_x64__pzs8sxrjxfjjc\\app\\claude.exe";
+        let new = "C:\\Program Files\\WindowsApps\\Claude_4.23118.1.0_x64__pzs8sxrjxfjjc\\app\\claude.exe";
+        assert_eq!(package_family(old).as_deref(), Some("claude_pzs8sxrjxfjjc"));
+        assert_eq!(package_family(old), package_family(new));
+        assert_eq!(package_family("shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude"), package_family(new));
+        assert_eq!(package_family("c:\\program files\\steam\\steam.exe"), None);
+        assert_eq!(package_family("shell:AppsFolder\\no-bang"), None);
+    }
+
+    #[test]
+    fn updated_store_app_window_lands_on_its_pin() {
+        let pin = |path: &str, exe: &str| Pin {
+            path: path.into(),
+            name: String::new(),
+            exe: exe.into(),
+            squirrel_app: None,
+            family: package_family(exe).or_else(|| package_family(path)),
+        };
+        let old = "c:\\program files\\windowsapps\\claude_4.23118.0.0_x64__pzs8sxrjxfjjc\\app\\claude.exe";
+        let pins = [
+            pin("c:\\apps\\tool.exe", "c:\\apps\\tool.exe"),
+            pin(old, old),
+            pin("shell:AppsFolder\\Microsoft.WindowsNotepad_8wekyb3d8bbwe!App", ""),
+        ];
+        let claude = HWND(7 as *mut _);
+        let notepad = HWND(8 as *mut _);
+        let windows = [
+            AppWindow { hwnd: claude, exe: "c:\\program files\\windowsapps\\claude_4.23118.1.0_x64__pzs8sxrjxfjjc\\app\\claude.exe".into() },
+            AppWindow { hwnd: notepad, exe: "c:\\program files\\windowsapps\\microsoft.windowsnotepad_11.2608.2.0_x64__8wekyb3d8bbwe\\notepad\\notepad.exe".into() },
+        ];
+        let items = dock_items(&pins, &windows);
+        // Pins come first, in pin order (dock::upgrade_store_pins relies on it),
+        // and the updated apps' windows land on them: no extra icons.
+        assert_eq!(items.len(), 3);
+        for (item, p) in items.iter().zip(&pins) {
+            assert_eq!(item.launch.as_deref(), Some(p.path.as_str()));
+        }
+        assert_eq!(items[1].windows, vec![claude]);
+        assert_eq!(items[2].windows, vec![notepad]);
+    }
+
+    #[test]
     fn squirrel_pin_matches_only_its_app() {
         let pin = Pin {
             path: "Discord.lnk".into(),
             name: "Discord".into(),
             exe: "c:\\users\\me\\appdata\\local\\discord\\update.exe".into(),
             squirrel_app: Some("discord.exe".into()),
+            family: None,
         };
         let folder = "c:\\users\\me\\appdata\\local\\discord";
         assert!(window_matches_pin("c:\\users\\me\\appdata\\local\\discord\\app-1.0.9\\discord.exe", &pin, folder));
