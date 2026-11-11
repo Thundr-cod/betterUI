@@ -1,0 +1,79 @@
+commit: 0fc052c24f9dc55060ede85358561389f1adc044
+ref: main
+screen: 1024x768
+explorer running: True
+transparency effects: 1
+screenshot.png : still running after 7s = True
+audio-devices.png : still running after 7s = True
+audio-mixer.png : still running after 7s = True
+bluetooth.png : still running after 7s = True
+control-center.png : still running after 7s = True
+dock.png : still running after 7s = True
+tray.png : still running after 7s = True
+rebuilt-bars.png : still running after 7s = True
+--- log.txt ---
+[1794438446] betterUI 0.0.910 starting
+[1794438446] monitors: 0 -> 1
+[1794438446] dock pin File Explorer.lnk -> "explorer.exe"
+[1794438446] dock pin Microsoft Edge.lnk -> "msedge.exe"
+[1794438453] betterUI ended without putting the taskbar back (End task or crash); the watchdog restored it
+[1794438453] restoring the taskbar: 1 taskbar window(s) found, auto-hide state 0x1, front "Shell_TrayWnd" is Explorer's: true
+[1794438453] taskbar check 0: visible=true off-screen=false cloaked=false auto-hide state=0x0 (original Some(0))
+[1794438454] betterUI 0.0.910 starting
+[1794438454] monitors: 0 -> 1
+[1794438454] another betterUI is running; leaving the taskbar to it
+[1794438454] dock pin File Explorer.lnk -> "explorer.exe"
+[1794438454] dock pin Microsoft Edge.lnk -> "msedge.exe"
+[1794438461] betterUI ended without putting the taskbar back (End task or crash); the watchdog restored it
+[1794438461] restoring the taskbar: 1 taskbar window(s) found, auto-hide state 0x1, front "Shell_TrayWnd" is Explorer's: true
+[1794438461] taskbar check 0: visible=true off-screen=false cloaked=false auto-hide state=0x0 (original Some(0))
+[1794438462] betterUI 0.0.910 starting
+[1794438462] monitors: 0 -> 1
+[1794438462] another betterUI is running; leaving the taskbar to it
+[1794438462] dock pin File Explorer.lnk -> "explorer.exe"
+[1794438462] dock pin Microsoft Edge.lnk -> "msedge.exe"
+[1794438469] betterUI ended without putting the taskbar back (End task or crash); the watchdog restored it
+[1794438469] restoring the taskbar: 1 taskbar window(s) found, auto-hide state 0x1, front "Shell_TrayWnd" is Explorer's: true
+[1794438469] taskbar check 0: visible=true off-screen=false cloaked=false auto-hide state=0x0 (original Some(0))
+[1794438470] betterUI 0.0.910 starting
+[1794438470] monitors: 0 -> 1
+[1794438470] another betterUI is running; leaving the taskbar to it
+[1794438470] dock pin File Explorer.lnk -> "explorer.exe"
+[1794438470] dock pin Microsoft Edge.lnk -> "msedge.exe"
+[1794438477] betterUI ended without putting the taskbar back (End task or crash); the watchdog restored it
+[1794438477] restoring the taskbar: 1 taskbar window(s) found, auto-hide state 0x1, front "Shell_TrayWnd" is Explorer's: true
+[1794438477] taskbar check 0: visible=true off-screen=false cloaked=false auto-hide state=0x0 (original Some(0))
+[1794438478] betterUI 0.0.910 starting
+[1794438478] monitors: 0 -> 1
+[1794438478] another betterUI is running; leaving the taskbar to it
+[1794438478] dock pin File Explorer.lnk -> "explorer.exe"
+[1794438478] dock pin Microsoft Edge.lnk -> "msedge.exe"
+[1794438485] betterUI ended without putting the taskbar back (End task or crash); the watchdog restored it
+[1794438485] restoring the taskbar: 1 taskbar window(s) found, auto-hide state 0x1, front "Shell_TrayWnd" is Explorer's: true
+[1794438485] taskbar check 0: visible=true off-screen=false cloaked=false auto-hide state=0x0 (original Some(0))
+[1794438486] betterUI 0.0.910 starting
+[1794438486] monitors: 0 -> 1
+[1794438486] another betterUI is running; leaving the taskbar to it
+[1794438486] dock pin File Explorer.lnk -> "explorer.exe"
+[1794438486] dock pin Microsoft Edge.lnk -> "msedge.exe"
+[1794438493] betterUI ended without putting the taskbar back (End task or crash); the watchdog restored it
+[1794438493] restoring the taskbar: 1 taskbar window(s) found, auto-hide state 0x1, front "Shell_TrayWnd" is Explorer's: true
+[1794438493] taskbar check 0: visible=true off-screen=false cloaked=false auto-hide state=0x0 (original Some(0))
+[1794438494] betterUI 0.0.910 starting
+[1794438494] monitors: 0 -> 1
+[1794438494] another betterUI is running; leaving the taskbar to it
+[1794438494] dock pin File Explorer.lnk -> "explorer.exe"
+[1794438494] dock pin Microsoft Edge.lnk -> "msedge.exe"
+[1794438501] betterUI ended without putting the taskbar back (End task or crash); the watchdog restored it
+[1794438501] restoring the taskbar: 1 taskbar window(s) found, auto-hide state 0x1, front "Shell_TrayWnd" is Explorer's: true
+[1794438502] taskbar check 0: visible=true off-screen=false cloaked=false auto-hide state=0x0 (original Some(0))
+[1794438502] betterUI 0.0.910 starting
+[1794438502] monitors: 0 -> 1
+[1794438502] another betterUI is running; leaving the taskbar to it
+[1794438502] dock pin File Explorer.lnk -> "explorer.exe"
+[1794438502] dock pin Microsoft Edge.lnk -> "msedge.exe"
+[1794438504] monitors: 1 -> 1
+[1794438509] betterUI ended without putting the taskbar back (End task or crash); the watchdog restored it
+[1794438509] restoring the taskbar: 1 taskbar window(s) found, auto-hide state 0x1, front "Shell_TrayWnd" is Explorer's: true
+[1794438510] taskbar check 0: visible=true off-screen=false cloaked=false auto-hide state=0x0 (original Some(0))
+
