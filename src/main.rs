@@ -11,6 +11,7 @@ mod bluetooth;
 mod brightness;
 mod bar;
 mod config;
+mod crash_log;
 mod dock;
 mod icon_loader;
 mod icons;
@@ -80,6 +81,8 @@ fn main() {
         log::write(&format!("PANIC: {info}"));
         taskbar::restore();
     }));
+    // And note where serious errors come from (the occasional crash on quit).
+    crash_log::install();
 
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
