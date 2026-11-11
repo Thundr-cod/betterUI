@@ -37,7 +37,9 @@ pub fn install() {
 /// libraries raise and handle all the time (thread names, C++ exceptions,
 /// RPC) are skipped.
 fn worth_logging(code: u32) -> bool {
-    code == QUIT_CRASH_CODE || code >= 0xC000_0000
+    // Error severity (top two bits set), but not the "customer" bit 29 that
+    // C++ exceptions (0xE06D7363) and other app-defined codes carry.
+    code == QUIT_CRASH_CODE || (code >> 30 == 3 && code & 0x2000_0000 == 0)
 }
 
 unsafe extern "system" fn on_exception(info: *mut EXCEPTION_POINTERS) -> i32 {
