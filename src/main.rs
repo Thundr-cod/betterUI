@@ -133,8 +133,7 @@ fn log_memory_use() {
             if ok.is_ok() {
                 // Counts too, so a jump in memory can be matched to what grew.
                 let (handles, gdi, user) = unsafe {
-                    use windows::Win32::System::Threading::GetProcessHandleCount;
-                    use windows::Win32::UI::WindowsAndMessaging::{GetGuiResources, GR_GDIOBJECTS, GR_USEROBJECTS};
+                    use windows::Win32::System::Threading::{GetGuiResources, GetProcessHandleCount, GR_GDIOBJECTS, GR_USEROBJECTS};
                     let mut handles = 0u32;
                     let _ = GetProcessHandleCount(GetCurrentProcess(), &mut handles);
                     (handles, GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS), GetGuiResources(GetCurrentProcess(), GR_USEROBJECTS))
