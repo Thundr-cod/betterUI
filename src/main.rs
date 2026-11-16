@@ -131,14 +131,44 @@ fn log_memory_use() {
                 )
             };
             if ok.is_ok() {
+                // Counts too, so a jump in memory can be matched to what grew.
+                let (handles, gdi, user) = unsafe {
+                    use windows::Win32::System::Threading::GetProcessHandleCount;
+                    use windows::Win32::UI::WindowsAndMessaging::{GetGuiResources, GR_GDIOBJECTS, GR_USEROBJECTS};
+                    let mut handles = 0u32;
+                    let _ = GetProcessHandleCount(GetCurrentProcess(), &mut handles);
+                    (handles, GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS), GetGuiResources(GetCurrentProcess(), GR_USEROBJECTS))
+                };
                 log::write(&format!(
-                    "memory: {} K working set, {} K private",
+                    "memory: {} K working set, {} K private; {handles} handles, {gdi} GDI, {user} USER objects, {} threads",
                     pmc.WorkingSetSize / 1024,
-                    pmc.PrivateUsage / 1024
+                    pmc.PrivateUsage / 1024,
+                    thread_count()
                 ));
             }
         }
     });
+}
+
+/// How many threads betterUI has (background work that never finished shows up here).
+fn thread_count() -> usize {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32};
+    let pid = std::process::id();
+    let mut count = 0;
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) else { return 0 };
+        let mut entry = THREADENTRY32 { dwSize: std::mem::size_of::<THREADENTRY32>() as u32, ..Default::default() };
+        let mut more = Thread32First(snap, &mut entry).is_ok();
+        while more {
+            if entry.th32OwnerProcessID == pid {
+                count += 1;
+            }
+            more = Thread32Next(snap, &mut entry).is_ok();
+        }
+        let _ = CloseHandle(snap);
+    }
+    count
 }
 
 /// Started at sign-in, betterUI can be up before Explorer has made its
