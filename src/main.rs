@@ -110,6 +110,14 @@ fn main() {
     tray::stop();
     taskbar::restore_and_settle();
     log::write("betterUI exited");
+    // End here, skipping the late cleanup of thread-local window state: the
+    // flyouts' Direct2D objects released that late made DXGI raise 0x87A
+    // (logged on every manual quit in v0.0.911). Everything that matters is
+    // already saved, and Windows frees the rest.
+    unsafe {
+        use windows::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+        let _ = TerminateProcess(GetCurrentProcess(), 0);
+    }
 }
 
 /// Note betterUI's memory use in log.txt a minute after starting and then
