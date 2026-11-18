@@ -22,15 +22,14 @@ use std::time::Instant;
 use windows::core::{w, Result, GUID};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CopyIcon, CreateWindowExW, DefWindowProcW, DestroyIcon, FindWindowExW, FindWindowW,
-    GetWindowThreadProcessId,
-    IsWindow, KillTimer, PostMessageW, RegisterClassW, RegisterWindowMessageW, SendMessageTimeoutW,
-    SetTimer, SetWindowPos, HICON, HWND_BROADCAST, HWND_TOPMOST, SMTO_ABORTIFHUNG, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, WM_COPYDATA, WM_TIMER, WM_USER, WNDCLASSW, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    CopyIcon, DefWindowProcW, DestroyIcon, FindWindowExW, FindWindowW, GetWindowThreadProcessId, IsWindow,
+    KillTimer, PostMessageW, RegisterWindowMessageW, SendMessageTimeoutW, SetTimer, SetWindowPos, HICON,
+    HWND_BROADCAST, HWND_TOPMOST, SMTO_ABORTIFHUNG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WM_COPYDATA,
+    WM_TIMER, WM_USER, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
+
+use crate::ui::window;
 
 use crate::log;
 
@@ -109,7 +108,7 @@ struct Host {
     taskbar_created: u32,
     last_broadcast: Option<Instant>,
     /// Told when the icon list changes (the dropdown).
-    on_change: Option<fn()>,
+    on_change: fn(),
 }
 
 thread_local! {
@@ -165,37 +164,15 @@ pub fn start(on_change: fn()) {
 }
 
 fn start_inner(on_change: fn()) -> Result<()> {
+    let class = w!("Shell_TrayWnd");
+    window::register_class(class, Some(wndproc))?;
+    // Never shown; it only receives messages.
+    let hwnd = window::create(class, w!(""), WS_EX_TOOLWINDOW | WS_EX_TOPMOST, 0, 0, 0, 0)?;
     unsafe {
-        let hinstance = GetModuleHandleW(None)?.into();
-        let class = w!("Shell_TrayWnd");
-        let wc = WNDCLASSW {
-            lpfnWndProc: Some(wndproc),
-            hInstance: hinstance,
-            lpszClassName: class,
-            ..Default::default()
-        };
-        if RegisterClassW(&wc) == 0 {
-            return Err(windows::core::Error::from_win32());
-        }
-        // Never shown; it only receives messages.
-        let hwnd = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
-            class,
-            w!(""),
-            WS_POPUP,
-            0,
-            0,
-            0,
-            0,
-            None,
-            None,
-            hinstance,
-            None,
-        )?;
         HOST_HWND.store(hwnd.0 as isize, std::sync::atomic::Ordering::SeqCst);
         let taskbar_created = RegisterWindowMessageW(w!("TaskbarCreated"));
         HOST.with(|h| {
-            *h.borrow_mut() = Some(Host { icons: Vec::new(), taskbar_created, last_broadcast: None, on_change: Some(on_change) })
+            *h.borrow_mut() = Some(Host { icons: Vec::new(), taskbar_created, last_broadcast: None, on_change })
         });
         bring_to_front(hwnd);
         SetTimer(hwnd, TIMER_TOPMOST, 1000, None);
@@ -232,9 +209,6 @@ fn broadcast_taskbar_created(msg: u32) {
 
 /// Current tray icons (visible ones only), oldest first.
 pub fn icons() -> Vec<TrayIcon> {
-    if crate::audio::demo() {
-        return demo_icons();
-    }
     HOST.with(|h| {
         let Ok(mut g) = h.try_borrow_mut() else { return Vec::new() };
         let Some(host) = g.as_mut() else { return Vec::new() };
@@ -252,24 +226,6 @@ pub fn icons() -> Vec<TrayIcon> {
         });
         host.icons.iter().filter(|i| !i.hidden && i.icon.is_some()).cloned().collect()
     })
-}
-
-fn demo_icons() -> Vec<TrayIcon> {
-    use windows::Win32::UI::WindowsAndMessaging::{LoadIconW, IDI_APPLICATION, IDI_INFORMATION, IDI_SHIELD, IDI_WARNING};
-    [(IDI_SHIELD, "Windows Security"), (IDI_INFORMATION, "OneDrive - Up to date"), (IDI_APPLICATION, "Steam"), (IDI_WARNING, "Discord"), (IDI_APPLICATION, "NVIDIA Settings")]
-        .iter()
-        .enumerate()
-        .map(|(i, (id, tip))| TrayIcon {
-            owner: HWND::default(),
-            uid: i as u32,
-            guid: None,
-            callback_message: 0,
-            version: 4,
-            icon: unsafe { LoadIconW(None, *id).ok() },
-            tip: tip.to_string(),
-            hidden: false,
-        })
-        .collect()
 }
 
 /// Simulate a click on a tray icon, the way Explorer does: send the app the
@@ -472,7 +428,7 @@ fn record(cds: &COPYDATASTRUCT) {
         }
     });
     if changed {
-        let cb = HOST.with(|h| h.try_borrow().ok().and_then(|g| g.as_ref().and_then(|x| x.on_change)));
+        let cb = HOST.with(|h| h.try_borrow().ok().and_then(|g| g.as_ref().map(|x| x.on_change)));
         if let Some(cb) = cb {
             cb();
         }

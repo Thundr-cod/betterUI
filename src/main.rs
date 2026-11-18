@@ -1,33 +1,17 @@
 // betterUI — a lightweight native desktop shell for Windows 11.
 #![windows_subsystem = "windows"]
 
-mod appbar;
-mod apps;
-mod audio;
-mod audio_flyout;
 mod autostart;
-mod backdrop;
-mod bluetooth;
-mod brightness;
-mod bar;
 mod config;
-mod dock;
-mod icon_loader;
-mod icons;
+mod flyouts;
 mod log;
-mod panel;
-mod policy;
-mod popup;
-mod procinfo;
-mod radios;
-mod render;
-mod start_menu;
-mod sysinfo;
-mod taskbar;
-mod tray;
-mod tray_flyout;
+mod shell;
+mod storage;
+mod system;
 mod ui;
 mod watchdog;
+
+use shell::{bar, taskbar, tray};
 
 use windows::core::w;
 use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
@@ -62,11 +46,6 @@ fn main() {
     if let Some(pid) = args.iter().find_map(|a| a.strip_prefix("--watchdog=")).and_then(|p| p.parse().ok()) {
         watchdog::watch(pid);
         return;
-    }
-
-    // Demo data for the CI screenshot test (no real devices are touched).
-    if args.iter().any(|a| a == "--demo-audio" || a == "--demo") {
-        audio::enable_demo();
     }
 
     // Only one copy may run at a time.

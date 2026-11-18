@@ -13,71 +13,54 @@
 
 use std::cell::{Cell, RefCell};
 
-use windows::core::{w, Error, Result};
-use windows::Win32::Foundation::{BOOL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM};
-use windows::Win32::Graphics::Dwm::{
-    DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE,
-    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
-};
+use windows::core::{w, Result};
+use windows::Win32::Foundation::{BOOL, HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM};
 use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
-use windows::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, EnumDisplayMonitors, GetMonitorInfoW, InvalidateRect, MonitorFromRect,
-    ScreenToClient, HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT,
-};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::Graphics::Dwm::DWMWCP_DONOTROUND;
+use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, MonitorFromRect, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::System::SystemInformation::GetLocalTime;
-use windows::Win32::UI::Controls::MARGINS;
-use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-    DispatchMessageW, KillTimer,
-    GetCursorPos, GetMessageW, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassW,
-    RegisterWindowMessageW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
-    TrackPopupMenu, TranslateMessage, HWND_TOPMOST, IDC_ARROW, MF_CHECKED, MF_POPUP,
-    MF_SEPARATOR, MF_STRING, MF_UNCHECKED, MSG, SWP_NOACTIVATE,
-    SW_HIDE, SW_SHOWNA, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_ACTIVATE, WM_APP,
-    WM_CLOSE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENDSESSION, WM_ERASEBKGND,
-    WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_TIMER,
-    WM_WINDOWPOSCHANGED, WNDCLASSW,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, KillTimer, PostMessageW,
+    PostQuitMessage, RegisterWindowMessageW, SetTimer, SetWindowPos, ShowWindow, TranslateMessage, HWND_TOPMOST,
+    MSG, SWP_NOACTIVATE, SW_HIDE, SW_SHOWNA, WM_ACTIVATE, WM_APP, WM_CLOSE, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WM_ENDSESSION, WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONUP, WM_TIMER,
+    WM_WINDOWPOSCHANGED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
 
-use crate::appbar::{self, ABN_FULLSCREENAPP, ABN_POSCHANGED};
-use crate::audio::{Audio, Flow, Level};
-use crate::audio_flyout::{self, Tab, WM_AUDIO_CHANGED};
-use crate::panel::{self, Kind};
-use crate::{tray, tray_flyout};
-use crate::ui::{self, R};
-use crate::backdrop;
-use crate::apps;
+use super::appbar::{self, ABN_FULLSCREENAPP, ABN_POSCHANGED};
+use super::slide::Slide;
+use super::{dock, taskbar, tray};
 use crate::config::{Config, DockMode};
-use crate::render::{Color, Gfx, Text, ICON_FONT, TEXT_FONT};
-use crate::sysinfo::{self, Memory, Network};
-use crate::{log, taskbar};
+use crate::flyouts::audio::{self as audio_flyout, WM_AUDIO_CHANGED};
+use crate::flyouts::panel::{self, Kind};
+use crate::flyouts::tray as tray_flyout;
+use crate::log;
+use crate::system::apps;
+use crate::system::audio::{Audio, Flow, Level};
+use crate::system::sysinfo::{self, Memory, Network};
+use crate::ui::render::{Color, Gfx, Text, ICON_FONT, TEXT_FONT};
+use crate::ui::window::{self, Menu, MA_NOACTIVATE};
+use crate::ui::{self, backdrop, R, DIM, FAINT, FG, ICON_BLUETOOTH, ICON_WIFI};
 
 // ---- Look -----------------------------------------------------------------
 const BAR_HEIGHT: f32 = 32.0; // logical pixels (scaled by DPI)
 const BG_RGB: (f32, f32, f32) = (0.06, 0.06, 0.08);
-const PILL: Color = Color(1.0, 1.0, 1.0, 0.07);
-const FG: Color = Color(1.0, 1.0, 1.0, 0.92);
-const DIM: Color = Color(1.0, 1.0, 1.0, 0.55);
 
 // Segoe Fluent Icons glyphs
-const ICON_WIFI: &str = "\u{E701}";
 const ICON_RAM: &str = "\u{EEA0}"; // a memory module
 const ICON_ETHERNET: &str = "\u{E839}";
-const ICON_BLUETOOTH: &str = "\u{E702}";
 const ICON_CONTROL_CENTER: &str = "\u{E9E9}";
 const ICON_TRAY: &str = "\u{E70D}";
 
 // ---- Messages / timers ----------------------------------------------------
 const WM_APPBAR: u32 = WM_APP + 1;
+/// Settings changed from one bar's menu: every bar reloads them.
+const WM_CONFIG_CHANGED: u32 = WM_APP + 4;
 const TIMER_TICK: usize = 1; // 1 s: clock + system info
 const TIMER_TASKBAR: usize = 2; // keep the native taskbar hidden
 const TIMER_REBUILD: usize = 3; // monitors changed (debounced)
 const TIMER_POLL: usize = 4; // 100 ms: auto-hide (mouse at top edge, windows covering)
 const TIMER_ANIM: usize = 5; // ~60 fps while sliding in or out
-const HIDE_DELAY_TICKS: u32 = 4; // wait 400 ms before hiding
 const MENU_QUIT: usize = 1;
 const MENU_BLUR: usize = 2;
 const MENU_AUTOSTART: usize = 3;
@@ -86,12 +69,6 @@ const MENU_BAR_AUTOHIDE: usize = 22;
 const MENU_BAR_SMART: usize = 23;
 const MENU_OPACITY_BASE: usize = 1000; // 1000 + percent
 const OPACITY_CHOICES: [u32; 9] = [100, 90, 80, 70, 60, 50, 40, 30, 20];
-const MA_NOACTIVATE: isize = 3;
-// Used by the CI screenshot test: open a flyout right after start-up.
-const WM_TEST_OPEN: u32 = WM_APP + 3;
-/// Settings changed from one bar's menu: every bar reloads them.
-const WM_CONFIG_CHANGED: u32 = WM_APP + 4;
-const MONITORINFOF_PRIMARY: u32 = 1;
 
 thread_local! {
     /// One bar per monitor; the main monitor's bar is first.
@@ -100,8 +77,6 @@ thread_local! {
     static BAR_HWNDS: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) };
     /// Set when monitors changed; the bars are rebuilt from the message loop.
     static REBUILD: Cell<bool> = const { Cell::new(false) };
-    /// Replace the bars even if the monitors look the same (CI test).
-    static FORCE_REBUILD: Cell<bool> = const { Cell::new(false) };
 }
 
 /// A monitor: its full rectangle and whether it's the main one.
@@ -114,9 +89,8 @@ struct Monitor {
 fn monitors() -> Vec<Monitor> {
     unsafe extern "system" fn collect(hmon: HMONITOR, _: HDC, _: *mut RECT, lparam: LPARAM) -> BOOL {
         let list = &mut *(lparam.0 as *mut Vec<Monitor>);
-        let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-        if GetMonitorInfoW(hmon, &mut mi).as_bool() {
-            list.push(Monitor { rect: mi.rcMonitor, primary: mi.dwFlags & MONITORINFOF_PRIMARY != 0 });
+        if let Some(m) = window::monitor_info(hmon) {
+            list.push(Monitor { rect: m.rect, primary: m.primary });
         }
         TRUE
     }
@@ -156,66 +130,33 @@ struct Bar {
     cc_btn: R,
     tray_btn: R,
     origin: (i32, i32),
-    // Auto-hide (bar_mode autohide / smart). offset is 0 when shown and
-    // negative (slid up above the screen edge) when hidden.
-    offset: f32,
-    target_hidden: bool,
-    hide_ticks: u32,
+    /// Auto-hide (bar_mode autohide / smart): slides up above the screen edge.
+    slide: Slide,
     covered: bool,
-    animating: bool,
     polls: u64,
 }
 
 pub fn run() -> Result<()> {
+    window::register_class(w!("betterUI.TopBar"), Some(wndproc))?;
+    rebuild_bars(true);
+    if Config::load().tray_enabled {
+        tray::start(tray_flyout::changed);
+    }
+    dock::create();
+
     unsafe {
-        let hinstance: HINSTANCE = GetModuleHandleW(None)?.into();
-        let class = w!("betterUI.TopBar");
-        let wc = WNDCLASSW {
-            lpfnWndProc: Some(wndproc),
-            hInstance: hinstance,
-            lpszClassName: class,
-            hCursor: LoadCursorW(None, IDC_ARROW)?,
-            ..Default::default()
-        };
-        if RegisterClassW(&wc) == 0 {
-            return Err(Error::from_win32());
-        }
-        rebuild_bars(true);
-
-        if Config::load().tray_enabled {
-            tray::start(tray_flyout::changed);
-        }
-        crate::dock::create(std::env::args().any(|a| a == "--test-open=dock"));
-
-        // `--test-open=...`: open a flyout from the main bar (CI screenshots).
-        let main_bar = BAR_HWNDS.with(|h| h.borrow().first().copied());
-        for arg in std::env::args() {
-            let tab = match arg.as_str() {
-                "--test-open=audio-devices" => Some(0),
-                "--test-open=audio-mixer" => Some(1),
-                "--test-open=bluetooth" => Some(2),
-                "--test-open=control-center" => Some(3),
-                "--test-open=tray" => Some(4),
-                "--test-rebuild" => Some(9),
-                _ => None,
-            };
-            if let (Some(t), Some(h)) = (tab, main_bar) {
-                let _ = PostMessageW(h, WM_TEST_OPEN, WPARAM(t), LPARAM(0));
-            }
-        }
-
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
             // Rebuild here, outside any window's message handler.
             if REBUILD.with(|r| r.replace(false)) {
-                rebuild_bars(FORCE_REBUILD.with(|f| f.replace(false)));
+                rebuild_bars(false);
             }
         }
 
         // Quitting: remove the dock and every bar (each unregisters its screen space).
-        crate::dock::destroy();
+        dock::destroy();
         let bars: Vec<Bar> = BARS.with(|b| std::mem::take(&mut *b.borrow_mut()));
         for bar in bars {
             let _ = DestroyWindow(bar.hwnd);
@@ -284,61 +225,27 @@ fn notify_config_changed() {
 }
 
 fn create_bar(monitor: Monitor) -> Result<Bar> {
-    unsafe {
-        let hinstance: HINSTANCE = GetModuleHandleW(None)?.into();
-        let hwnd = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
-            w!("betterUI.TopBar"),
-            w!("betterUI"),
-            WS_POPUP,
-            monitor.rect.left,
-            monitor.rect.top,
-            100,
-            32,
-            None,
-            None,
-            hinstance,
-            None,
-        )?;
-        style_window(hwnd);
-        let mut bar = Bar::new(hwnd, monitor)?;
-        backdrop::set_blur(hwnd, bar.config.bar_blur);
-        if bar.config.bar_mode == DockMode::Always {
-            appbar::register(hwnd, WM_APPBAR);
-        } else {
+    let hwnd = window::create(
+        w!("betterUI.TopBar"),
+        w!("betterUI"),
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+        monitor.rect.left,
+        monitor.rect.top,
+        100,
+        32,
+    )?;
+    window::style(hwnd, DWMWCP_DONOTROUND);
+    let mut bar = Bar::new(hwnd, monitor)?;
+    backdrop::set_blur(hwnd, bar.config.bar_blur);
+    if bar.config.bar_mode == DockMode::Always {
+        appbar::register(hwnd, WM_APPBAR);
+    } else {
+        unsafe {
             SetTimer(hwnd, TIMER_POLL, 100, None);
         }
-        bar.reposition();
-        Ok(bar)
     }
-}
-
-/// Dark mode, square corners, and per-pixel transparency (the blur itself
-/// is set up in backdrop.rs).
-fn style_window(hwnd: HWND) {
-    unsafe {
-        let dark: BOOL = TRUE;
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_USE_IMMERSIVE_DARK_MODE,
-            &dark as *const _ as *const _,
-            std::mem::size_of::<BOOL>() as u32,
-        );
-        let corners = DWMWCP_DONOTROUND;
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE,
-            &corners as *const _ as *const _,
-            std::mem::size_of_val(&corners) as u32,
-        );
-        let margins = MARGINS {
-            cxLeftWidth: -1,
-            cxRightWidth: -1,
-            cyTopHeight: -1,
-            cyBottomHeight: -1,
-        };
-        let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
-    }
+    bar.reposition();
+    Ok(bar)
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -398,11 +305,8 @@ impl Bar {
             cc_btn: R::default(),
             tray_btn: R::default(),
             origin: (0, 0),
-            offset: 0.0,
-            target_hidden: false,
-            hide_ticks: 0,
+            slide: Slide::new(hwnd, TIMER_ANIM),
             covered: false,
-            animating: false,
             polls: 0,
         })
     }
@@ -414,16 +318,8 @@ impl Bar {
     fn handle(&mut self, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
         match msg {
             WM_PAINT => {
-                unsafe {
-                    let mut ps = PAINTSTRUCT::default();
-                    BeginPaint(self.hwnd, &mut ps);
-                    if let Err(e) = self.paint() {
-                        // The next clock tick repaints (after the render
-                        // target has been recreated, if the GPU was reset).
-                        log::write(&format!("paint failed: {e:?}"));
-                    }
-                    let _ = EndPaint(self.hwnd, &ps);
-                }
+                let hwnd = self.hwnd;
+                window::paint(hwnd, "bar", || self.paint());
                 Some(LRESULT(0))
             }
             WM_TIMER => {
@@ -473,9 +369,7 @@ impl Bar {
                     self.apply_mode(old_mode);
                 }
                 backdrop::set_blur(self.hwnd, self.config.bar_blur);
-                unsafe {
-                    let _ = InvalidateRect(self.hwnd, None, false);
-                }
+                window::invalidate(self.hwnd);
                 Some(LRESULT(0))
             }
             WM_ACTIVATE => {
@@ -491,32 +385,24 @@ impl Bar {
                 Some(LRESULT(0))
             }
             WM_LBUTTONUP => {
-                let x = (lp.0 & 0xFFFF) as u16 as i16 as f32;
-                let y = ((lp.0 >> 16) & 0xFFFF) as u16 as i16 as f32;
+                let (x, y) = window::client_point(lp);
                 if self.audio_btn.contains(x, y) {
-                    self.open_audio(None);
+                    self.open_audio();
                 } else if self.cc_btn.contains(x, y) {
-                    self.open_panel(Kind::ControlCenter, false);
+                    self.open_panel(Kind::ControlCenter);
                 } else if self.bt_btn.contains(x, y) {
-                    self.open_panel(Kind::Bluetooth, false);
+                    self.open_panel(Kind::Bluetooth);
                 } else if self.tray_btn.contains(x, y) {
-                    self.open_tray(false);
+                    self.open_tray();
                 }
                 Some(LRESULT(0))
             }
             WM_MOUSEWHEEL => {
                 // Scroll on the speaker button to change the volume.
-                let mut pt = POINT {
-                    x: (lp.0 & 0xFFFF) as u16 as i16 as i32,
-                    y: ((lp.0 >> 16) & 0xFFFF) as u16 as i16 as i32,
-                };
-                unsafe {
-                    let _ = ScreenToClient(self.hwnd, &mut pt);
-                }
-                if self.audio_btn.contains(pt.x as f32, pt.y as f32) {
-                    let notches = ((wp.0 >> 16) & 0xFFFF) as u16 as i16 as f32 / 120.0;
+                let (x, y) = window::wheel_point(self.hwnd, lp);
+                if self.audio_btn.contains(x, y) {
                     if let (Some(audio), Some(level)) = (&self.audio, self.volume) {
-                        audio.set_volume(Flow::Output, level.volume + notches * 0.02);
+                        audio.set_volume(Flow::Output, level.volume + window::wheel_notches(wp) * 0.02);
                     }
                     self.update_volume(true);
                 }
@@ -524,21 +410,6 @@ impl Bar {
             }
             WM_AUDIO_CHANGED => {
                 self.update_volume(true);
-                Some(LRESULT(0))
-            }
-            WM_TEST_OPEN => {
-                match wp.0 {
-                    0 => self.open_audio(Some(Tab::Devices)),
-                    1 => self.open_audio(Some(Tab::Mixer)),
-                    2 => self.open_panel(Kind::Bluetooth, true),
-                    3 => self.open_panel(Kind::ControlCenter, true),
-                    9 => unsafe {
-                        // Same path as a monitor being plugged in/out, after 2 s.
-                        FORCE_REBUILD.with(|f| f.set(true));
-                        SetTimer(self.hwnd, TIMER_REBUILD, 2000, None);
-                    },
-                    _ => self.open_tray(true),
-                }
                 Some(LRESULT(0))
             }
             m if m != 0 && m == self.taskbar_created => {
@@ -564,7 +435,7 @@ impl Bar {
             self.clock = clock;
             changed = true;
         }
-        if self.ticks % 2 == 0 {
+        if self.ticks.is_multiple_of(2) {
             let (memory, network) = shared_readouts();
             // Only redraw when the shown value (one decimal) changes.
             if (memory.used_gb * 10.0).round() != (self.memory.used_gb * 10.0).round() {
@@ -578,9 +449,7 @@ impl Bar {
         }
         changed |= self.update_volume(false);
         if changed {
-            unsafe {
-                let _ = InvalidateRect(self.hwnd, None, false);
-            }
+            window::invalidate(self.hwnd);
         }
     }
 
@@ -592,9 +461,7 @@ impl Bar {
         let changed = glyph_of(level) != glyph_of(self.volume);
         self.volume = level;
         if changed && redraw {
-            unsafe {
-                let _ = InvalidateRect(self.hwnd, None, false);
-            }
+            window::invalidate(self.hwnd);
         }
         changed
     }
@@ -617,23 +484,23 @@ impl Bar {
         }
     }
 
-    fn open_audio(&mut self, tab: Option<Tab>) {
+    fn open_audio(&mut self) {
         panel::hide();
         tray_flyout::hide();
-        audio_flyout::toggle(self.anchor(self.audio_btn), self.hwnd, self.config.bar_opacity, tab);
+        audio_flyout::toggle(self.anchor(self.audio_btn), self.hwnd, self.config.bar_opacity);
     }
 
-    fn open_panel(&mut self, kind: Kind, force_open: bool) {
+    fn open_panel(&mut self, kind: Kind) {
         audio_flyout::hide();
         tray_flyout::hide();
         let b = if kind == Kind::Bluetooth { self.bt_btn } else { self.cc_btn };
-        panel::toggle(kind, self.anchor(b), self.hwnd, self.config.bar_opacity, force_open);
+        panel::toggle(kind, self.anchor(b), self.hwnd, self.config.bar_opacity);
     }
 
-    fn open_tray(&mut self, force_open: bool) {
+    fn open_tray(&mut self) {
         audio_flyout::hide();
         panel::hide();
-        tray_flyout::toggle(self.anchor(self.tray_btn), self.config.bar_opacity, force_open);
+        tray_flyout::toggle(self.anchor(self.tray_btn), self.config.bar_opacity);
     }
 
     // ---- Auto-hide ------------------------------------------------------------
@@ -643,8 +510,7 @@ impl Bar {
         unsafe {
             if self.config.bar_mode == DockMode::Always {
                 let _ = KillTimer(self.hwnd, TIMER_POLL);
-                self.target_hidden = false;
-                self.offset = 0.0;
+                self.slide.jump(false, self.hidden_offset());
                 appbar::register(self.hwnd, WM_APPBAR);
                 let _ = ShowWindow(self.hwnd, SW_SHOWNA);
             } else {
@@ -666,23 +532,18 @@ impl Bar {
             return;
         }
         self.polls += 1;
-        let bar = RECT {
-            left: self.monitor.rect.left,
-            top: self.monitor.rect.top,
-            right: self.monitor.rect.right,
-            bottom: self.monitor.rect.top + self.height,
-        };
-        if self.config.bar_mode == DockMode::Smart && self.polls % 3 == 0 {
+        let m = self.monitor.rect;
+        let bar = RECT { left: m.left, top: m.top, right: m.right, bottom: m.top + self.height };
+        if self.config.bar_mode == DockMode::Smart && self.polls.is_multiple_of(3) {
             self.covered = apps::any_window_overlaps(&bar);
         }
         let mut cursor = POINT::default();
         unsafe {
             let _ = GetCursorPos(&mut cursor);
         }
-        let m = self.monitor.rect;
         let in_x = cursor.x >= m.left && cursor.x < m.right;
         let at_edge = in_x && cursor.y <= m.top + 1 && cursor.y >= m.top - 1;
-        let visible = self.offset > self.hidden_offset() + 1.0;
+        let visible = self.slide.shown(self.hidden_offset());
         let over = visible && in_x && cursor.y >= m.top && cursor.y <= bar.bottom + 8;
 
         let want_visible = if apps::fullscreen_on(&m) {
@@ -696,54 +557,17 @@ impl Bar {
                 _ => !self.covered || at_edge || over,
             }
         };
-        if want_visible {
-            self.hide_ticks = 0;
-            self.set_target_hidden(false);
-        } else {
-            self.hide_ticks += 1;
-            if self.hide_ticks >= HIDE_DELAY_TICKS {
-                self.set_target_hidden(true);
-            }
-        }
-    }
-
-    fn set_target_hidden(&mut self, hidden: bool) {
-        if hidden == self.target_hidden {
-            return;
-        }
-        self.target_hidden = hidden;
-        unsafe {
-            if !hidden {
-                let _ = ShowWindow(self.hwnd, SW_SHOWNA);
-            }
-            if !self.animating {
-                self.animating = true;
-                SetTimer(self.hwnd, TIMER_ANIM, 15, None);
-            }
-        }
+        self.slide.want_visible(want_visible);
     }
 
     fn animate(&mut self) {
-        let target = if self.target_hidden { self.hidden_offset() } else { 0.0 };
-        let diff = target - self.offset;
-        if diff.abs() < 1.0 {
-            self.offset = target;
-            self.animating = false;
-            unsafe {
-                let _ = KillTimer(self.hwnd, TIMER_ANIM);
-                if self.target_hidden {
-                    let _ = ShowWindow(self.hwnd, SW_HIDE);
-                }
-            }
-        } else {
-            self.offset += diff * 0.35;
-        }
+        self.slide.step(self.hidden_offset());
         unsafe {
             let _ = SetWindowPos(
                 self.hwnd,
                 HWND_TOPMOST,
                 self.origin.0,
-                self.origin.1 + self.offset.round() as i32,
+                self.origin.1 + self.slide.offset.round() as i32,
                 self.width,
                 self.height,
                 SWP_NOACTIVATE,
@@ -753,116 +577,90 @@ impl Bar {
 
     /// Size and place the bar across the top of its monitor.
     fn reposition(&mut self) {
-        unsafe {
-            let hmon = MonitorFromRect(&self.monitor.rect, MONITOR_DEFAULTTONEAREST);
-            let mut mi = MONITORINFO {
-                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-                ..Default::default()
-            };
-            let _ = GetMonitorInfoW(hmon, &mut mi);
-            self.monitor.rect = mi.rcMonitor;
-
-            let (mut dx, mut dy) = (96u32, 96u32);
-            let _ = GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
-            if dx != self.dpi && dx > 0 {
-                self.dpi = dx;
-                match make_formats(&self.gfx, self.scale()) {
-                    Ok(f) => self.fonts = f,
-                    Err(e) => log::write(&format!("font setup failed: {e:?}")),
-                }
+        let hmon = unsafe { MonitorFromRect(&self.monitor.rect, MONITOR_DEFAULTTONEAREST) };
+        let Some(m) = window::monitor_info(hmon) else { return };
+        self.monitor.rect = m.rect;
+        if m.dpi != self.dpi {
+            self.dpi = m.dpi;
+            match make_formats(&self.gfx, self.scale()) {
+                Ok(f) => self.fonts = f,
+                Err(e) => log::write(&format!("font setup failed: {e:?}")),
             }
+        }
 
-            let height = (BAR_HEIGHT * self.scale()).round() as i32;
-            let rc = if self.config.bar_mode == DockMode::Always {
-                appbar::reserve_top(self.hwnd, mi.rcMonitor, height)
-            } else {
-                // Auto-hide: float over the top edge without reserving space.
-                RECT { left: mi.rcMonitor.left, top: mi.rcMonitor.top, right: mi.rcMonitor.right, bottom: mi.rcMonitor.top + height }
-            };
-            self.origin = (rc.left, rc.top);
-            self.width = rc.right - rc.left;
-            self.height = rc.bottom - rc.top;
+        let height = (BAR_HEIGHT * self.scale()).round() as i32;
+        let rc = if self.config.bar_mode == DockMode::Always {
+            appbar::reserve_top(self.hwnd, m.rect, height)
+        } else {
+            // Auto-hide: float over the top edge without reserving space.
+            RECT { left: m.rect.left, top: m.rect.top, right: m.rect.right, bottom: m.rect.top + height }
+        };
+        self.origin = (rc.left, rc.top);
+        self.width = rc.right - rc.left;
+        self.height = rc.bottom - rc.top;
+        unsafe {
             let _ = SetWindowPos(
                 self.hwnd,
                 HWND_TOPMOST,
                 rc.left,
-                rc.top + self.offset.round() as i32,
+                rc.top + self.slide.offset.round() as i32,
                 self.width,
                 self.height,
                 SWP_NOACTIVATE,
             );
-            self.gfx.resize(self.width as u32, self.height as u32);
-            let _ = InvalidateRect(self.hwnd, None, false);
         }
+        self.gfx.resize(self.width as u32, self.height as u32);
+        window::invalidate(self.hwnd);
     }
 
     fn context_menu(&mut self) {
-        unsafe {
-            let Ok(menu) = CreatePopupMenu() else { return };
-            if let Ok(sub) = CreatePopupMenu() {
-                for pct in OPACITY_CHOICES {
-                    let check = if pct == self.config.bar_opacity { MF_CHECKED } else { MF_UNCHECKED };
-                    let label = windows::core::HSTRING::from(format!("{pct}%"));
-                    let _ = AppendMenuW(sub, MF_STRING | check, MENU_OPACITY_BASE + pct as usize, &label);
-                }
-                let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, w!("Bar opacity"));
+        let Some(menu) = Menu::new() else { return };
+        if let Some(sub) = Menu::new() {
+            for pct in OPACITY_CHOICES {
+                sub.check(MENU_OPACITY_BASE + pct as usize, &format!("{pct}%"), pct == self.config.bar_opacity);
             }
-            if let Ok(sub) = CreatePopupMenu() {
-                let mode = self.config.bar_mode;
-                let check = |m: DockMode| if mode == m { MF_CHECKED } else { MF_UNCHECKED };
-                let _ = AppendMenuW(sub, MF_STRING | check(DockMode::Always), MENU_BAR_ALWAYS, w!("Always show"));
-                let _ = AppendMenuW(sub, MF_STRING | check(DockMode::AutoHide), MENU_BAR_AUTOHIDE, w!("Auto-hide (show at top edge)"));
-                let _ = AppendMenuW(sub, MF_STRING | check(DockMode::Smart), MENU_BAR_SMART, w!("Hide when a window covers it"));
-                let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, w!("Bar visibility"));
-            }
-            let blur_check = if self.config.bar_blur { MF_CHECKED } else { MF_UNCHECKED };
-            let _ = AppendMenuW(menu, MF_STRING | blur_check, MENU_BLUR, w!("Blur behind bar"));
-            let start_check = if crate::autostart::is_enabled() { MF_CHECKED } else { MF_UNCHECKED };
-            let _ = AppendMenuW(menu, MF_STRING | start_check, MENU_AUTOSTART, w!("Start with Windows"));
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());
-            let _ = AppendMenuW(menu, MF_STRING, MENU_QUIT, w!("Quit betterUI (restores taskbar)"));
-            let mut pt = POINT::default();
-            let _ = GetCursorPos(&mut pt);
-            let _ = SetForegroundWindow(self.hwnd);
-            let cmd = TrackPopupMenu(
-                menu,
-                TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
-                pt.x,
-                pt.y,
-                0,
-                self.hwnd,
-                None,
-            );
-            let _ = DestroyMenu(menu); // also destroys the submenu
-            let cmd = cmd.0 as usize;
-            if cmd == MENU_QUIT {
-                taskbar::set_quitting();
-                PostQuitMessage(0);
-            } else if (MENU_BAR_ALWAYS..=MENU_BAR_SMART).contains(&cmd) {
-                let mode = match cmd {
-                    MENU_BAR_AUTOHIDE => DockMode::AutoHide,
-                    MENU_BAR_SMART => DockMode::Smart,
-                    _ => DockMode::Always,
-                };
-                // Every bar (including this one) picks it up from the settings.
-                Config::update(|c| c.bar_mode = mode);
-                notify_config_changed();
-            } else if cmd == MENU_AUTOSTART {
-                crate::autostart::set_enabled(!crate::autostart::is_enabled());
-            } else if cmd == MENU_BLUR {
-                let blur = !self.config.bar_blur;
-                self.config.bar_blur = blur;
-                Config::update(|c| c.bar_blur = blur);
-                notify_config_changed();
-                backdrop::set_blur(self.hwnd, self.config.bar_blur);
-                let _ = InvalidateRect(self.hwnd, None, false);
-            } else if cmd > MENU_OPACITY_BASE && cmd <= MENU_OPACITY_BASE + 100 {
-                let pct = (cmd - MENU_OPACITY_BASE) as u32;
-                self.config.bar_opacity = pct;
-                Config::update(|c| c.bar_opacity = pct);
-                notify_config_changed();
-                let _ = InvalidateRect(self.hwnd, None, false);
-            }
+            menu.submenu("Bar opacity", sub);
+        }
+        if let Some(sub) = Menu::new() {
+            let mode = self.config.bar_mode;
+            sub.check(MENU_BAR_ALWAYS, "Always show", mode == DockMode::Always);
+            sub.check(MENU_BAR_AUTOHIDE, "Auto-hide (show at top edge)", mode == DockMode::AutoHide);
+            sub.check(MENU_BAR_SMART, "Hide when a window covers it", mode == DockMode::Smart);
+            menu.submenu("Bar visibility", sub);
+        }
+        menu.check(MENU_BLUR, "Blur behind bar", self.config.bar_blur);
+        menu.check(MENU_AUTOSTART, "Start with Windows", crate::autostart::is_enabled());
+        menu.separator();
+        menu.item(MENU_QUIT, "Quit betterUI (restores taskbar)");
+
+        let cmd = menu.track(self.hwnd);
+        if cmd == MENU_QUIT {
+            taskbar::set_quitting();
+            unsafe { PostQuitMessage(0) };
+        } else if (MENU_BAR_ALWAYS..=MENU_BAR_SMART).contains(&cmd) {
+            let mode = match cmd {
+                MENU_BAR_AUTOHIDE => DockMode::AutoHide,
+                MENU_BAR_SMART => DockMode::Smart,
+                _ => DockMode::Always,
+            };
+            // Every bar (including this one) picks it up from the settings.
+            Config::update(|c| c.bar_mode = mode);
+            notify_config_changed();
+        } else if cmd == MENU_AUTOSTART {
+            crate::autostart::set_enabled(!crate::autostart::is_enabled());
+        } else if cmd == MENU_BLUR {
+            let blur = !self.config.bar_blur;
+            self.config.bar_blur = blur;
+            Config::update(|c| c.bar_blur = blur);
+            notify_config_changed();
+            backdrop::set_blur(self.hwnd, blur);
+            window::invalidate(self.hwnd);
+        } else if cmd > MENU_OPACITY_BASE && cmd <= MENU_OPACITY_BASE + 100 {
+            let pct = (cmd - MENU_OPACITY_BASE) as u32;
+            self.config.bar_opacity = pct;
+            Config::update(|c| c.bar_opacity = pct);
+            notify_config_changed();
+            window::invalidate(self.hwnd);
         }
     }
 
@@ -915,7 +713,7 @@ impl Bar {
             let inner: f32 = parts.iter().map(|(t, _)| t.width).sum::<f32>()
                 + gap * (parts.len().saturating_sub(1)) as f32;
             let width = inner + 2.0 * pad;
-            frame.round_rect(x, pill_y, width, pill_h, radius, PILL);
+            frame.round_rect(x, pill_y, width, pill_h, radius, FAINT);
             let mut cx = x + pad;
             for (t, c) in parts {
                 frame.text(t, cx, pill_y, *c);
@@ -932,29 +730,20 @@ impl Bar {
         // Centre
         frame.text(&clock, ((w - clock.width) / 2.0).round(), pill_y, FG);
 
-        // Right side
-        let speaker_w = speaker.width + 2.0 * pad;
-        let speaker_x = w - 6.0 * s - speaker_w;
-        let speaker_color = if self.volume.is_some() { FG } else { DIM };
-        pill(speaker_x, &[(&speaker, speaker_color)]);
-        let audio_btn = R::new(speaker_x, 0.0, speaker_w, h);
-        let cc_w = cc_icon.width + 2.0 * pad;
-        let cc_x = speaker_x - gap - cc_w;
-        pill(cc_x, &[(&cc_icon, FG)]);
-        let cc_btn = R::new(cc_x, 0.0, cc_w, h);
-        let bt_w = bt_icon.width + 2.0 * pad;
-        let bt_x = cc_x - gap - bt_w;
-        pill(bt_x, &[(&bt_icon, FG)]);
-        let bt_btn = R::new(bt_x, 0.0, bt_w, h);
-        let tray_btn = match &tray_icon {
-            Some(t) => {
-                let tw = t.width + 2.0 * pad;
-                let tx = bt_x - gap - tw;
-                pill(tx, &[(t, FG)]);
-                R::new(tx, 0.0, tw, h)
-            }
-            None => R::default(),
+        // Right side, from the right edge inwards: one-icon buttons.
+        let mut right = w - 6.0 * s;
+        let mut button = |icon: &Text, color: Color| -> R {
+            let bw = icon.width + 2.0 * pad;
+            right -= bw;
+            pill(right, &[(icon, color)]);
+            let r = R::new(right, 0.0, bw, h);
+            right -= gap;
+            r
         };
+        let audio_btn = button(&speaker, if self.volume.is_some() { FG } else { DIM });
+        let cc_btn = button(&cc_icon, FG);
+        let bt_btn = button(&bt_icon, FG);
+        let tray_btn = tray_icon.as_ref().map(|t| button(t, FG)).unwrap_or_default();
 
         let result = self.gfx.end(frame);
         self.audio_btn = audio_btn;
@@ -975,10 +764,10 @@ fn make_formats(gfx: &Gfx, scale: f32) -> Result<Formats> {
 
 /// Memory and network, read once for all bars: every monitor's bar ticks on
 /// this thread within the same second, so the first read is reused.
-fn shared_readouts() -> (sysinfo::Memory, sysinfo::Network) {
+fn shared_readouts() -> (Memory, Network) {
     use std::time::{Duration, Instant};
     thread_local! {
-        static LAST: std::cell::Cell<Option<(Instant, sysinfo::Memory, sysinfo::Network)>> = const { std::cell::Cell::new(None) };
+        static LAST: Cell<Option<(Instant, Memory, Network)>> = const { Cell::new(None) };
     }
     LAST.with(|last| {
         if let Some((at, m, n)) = last.get() {

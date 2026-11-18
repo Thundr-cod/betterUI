@@ -13,7 +13,7 @@ use windows::Win32::Graphics::Imaging::IWICBitmapSource;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
-use crate::icons::Icons;
+use crate::ui::icons::Icons;
 
 pub enum Source {
     /// An exe or shortcut (a pin, or a running app's exe).

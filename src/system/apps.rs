@@ -19,7 +19,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_EX_TOOLWINDOW,
 };
 
-use crate::procinfo;
+use crate::system::procinfo;
 
 /// One icon on the dock.
 #[derive(Clone)]
@@ -187,7 +187,7 @@ fn shell_display_name(path: &str) -> Option<String> {
 }
 
 fn pins_file() -> PathBuf {
-    crate::log::data_dir().join("dock_pins.txt")
+    crate::storage::data_dir().join("dock_pins.txt")
 }
 
 /// Exe a shortcut points to, lower-case ("" for Store apps and other
@@ -571,7 +571,7 @@ fn save_pin_paths(paths: &[String]) {
         text.push_str(p);
         text.push('\n');
     }
-    if let Err(e) = crate::log::save_file(&pins_file(), &text) {
+    if let Err(e) = crate::storage::save_file(&pins_file(), &text) {
         crate::log::write(&format!("could not save dock pins: {e}"));
     }
 }

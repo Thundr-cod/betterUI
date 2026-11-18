@@ -16,12 +16,12 @@ use std::path::PathBuf;
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, TRUE};
 use windows::Win32::UI::Shell::{SHAppBarMessage, APPBARDATA};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetWindowThreadProcessId, IsWindowVisible, ShowWindow, SW_HIDE,
+    EnumWindows, GetWindowThreadProcessId, IsWindowVisible, ShowWindow, SW_HIDE,
     SW_SHOWNA,
 };
 use windows::Win32::System::Threading::GetCurrentProcessId;
 
-use crate::appbar::{ABM_GETSTATE, ABM_SETSTATE, ABS_AUTOHIDE};
+use super::appbar::{ABM_GETSTATE, ABM_SETSTATE, ABS_AUTOHIDE};
 
 /// Set once betterUI starts quitting. From then on nothing may hide the
 /// taskbar: while betterUI restores it, Explorer can message betterUI's
@@ -56,25 +56,19 @@ pub fn another_instance_running() -> bool {
 }
 
 fn state_file() -> PathBuf {
-    crate::log::data_dir().join("taskbar_state.txt")
+    crate::storage::data_dir().join("taskbar_state.txt")
 }
 
 /// All of Explorer's taskbar windows (one per monitor).
 fn taskbar_windows() -> Vec<HWND> {
     unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let list = &mut *(lparam.0 as *mut Vec<HWND>);
-        let mut buf = [0u16; 64];
-        let n = GetClassNameW(hwnd, &mut buf);
-        if n > 0 {
-            let name = String::from_utf16_lossy(&buf[..n as usize]);
-            // Skip betterUI's own tray host window (same class name, see tray.rs).
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(hwnd, Some(&mut pid));
-            if (name == "Shell_TrayWnd" || name == "Shell_SecondaryTrayWnd")
-                && pid != GetCurrentProcessId()
-            {
-                list.push(hwnd);
-            }
+        let name = crate::system::apps::class_name(hwnd);
+        // Skip betterUI's own tray host window (same class name, see tray.rs).
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if (name == "Shell_TrayWnd" || name == "Shell_SecondaryTrayWnd") && pid != GetCurrentProcessId() {
+            list.push(hwnd);
         }
         TRUE
     }
@@ -118,7 +112,7 @@ pub fn hide() {
     if !path.exists() {
         // First hide since the last clean restore: remember the user's setting.
         // Without that file nothing could put the taskbar back, so don't hide it.
-        if let Err(e) = crate::log::save_file(&path, &current.to_string()) {
+        if let Err(e) = crate::storage::save_file(&path, &current.to_string()) {
             crate::log::write(&format!("not hiding the taskbar: could not save its setting: {e}"));
             return;
         }
@@ -154,11 +148,6 @@ pub fn hidden_by_us() -> bool {
     state_file().exists()
 }
 
-/// Put the taskbar back exactly as it was. Safe to call repeatedly.
-pub fn restore() {
-    restore_state();
-}
-
 /// Restore, then keep checking for a few seconds and put it back again if
 /// Explorer hides it. Quitting with the Start menu open left the taskbar
 /// hidden: Start closing a moment later made Explorer re-apply the hidden
@@ -170,7 +159,7 @@ pub fn restore_and_settle() {
         get_state(),
         front_is_explorer()
     ));
-    let original = restore_state();
+    let original = restore();
     let mut actions: Vec<&str> = Vec::new();
     for step in 0..15 {
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -182,7 +171,7 @@ pub fn restore_and_settle() {
         if hidden_by_us() {
             // Hidden again although nothing in this betterUI may hide it now:
             // restore once more.
-            restore_state();
+            restore();
             actions.push("restored again");
         }
         let state = get_state();
@@ -192,7 +181,7 @@ pub fn restore_and_settle() {
             if step == 0 || (!visible || parked) {
                 crate::log::write(&format!(
                     "taskbar check {step}: visible={visible} off-screen={parked} cloaked={} auto-hide state={state:#x} (original {original:?})",
-                    crate::apps::is_cloaked(hwnd)
+                    crate::system::apps::is_cloaked(hwnd)
                 ));
             }
             if !visible {
@@ -254,28 +243,26 @@ fn front_is_explorer() -> bool {
 /// where Explorer slides it while auto-hidden?
 fn parked_off_screen(hwnd: HWND) -> bool {
     use windows::Win32::Foundation::RECT;
-    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+    use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONEAREST};
     use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
-    unsafe {
-        let mut r = RECT::default();
-        if GetWindowRect(hwnd, &mut r).is_err() {
-            return false;
-        }
-        let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-        if !GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool() {
-            return false;
-        }
-        let m = mi.rcMonitor;
-        let w = (r.right.min(m.right) - r.left.max(m.left)).max(0);
-        let h = (r.bottom.min(m.bottom) - r.top.max(m.top)).max(0);
-        let full = (r.right - r.left).min(r.bottom - r.top).max(1);
-        // Auto-hide leaves a 2 px sliver on screen; a shown taskbar is ~48 px.
-        w.min(h) < full / 4
+    let mut r = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut r) }.is_err() {
+        return false;
     }
+    let Some(m) = crate::ui::window::monitor_info(unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) }) else {
+        return false;
+    };
+    let m = m.rect;
+    let w = (r.right.min(m.right) - r.left.max(m.left)).max(0);
+    let h = (r.bottom.min(m.bottom) - r.top.max(m.top)).max(0);
+    let full = (r.right - r.left).min(r.bottom - r.top).max(1);
+    // Auto-hide leaves a 2 px sliver on screen; a shown taskbar is ~48 px.
+    w.min(h) < full / 4
 }
 
+/// Put the taskbar back exactly as it was. Safe to call repeatedly.
 /// Returns the original auto-hide setting, if one was saved.
-fn restore_state() -> Option<u32> {
+pub fn restore() -> Option<u32> {
     let path = state_file();
     let original = fs::read_to_string(&path)
         .ok()

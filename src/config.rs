@@ -38,6 +38,20 @@ impl DockMode {
             DockMode::Always => "always",
         }
     }
+
+    /// The mode named `value`, or `default` for anything else.
+    fn parse(value: &str, default: DockMode) -> DockMode {
+        match value {
+            "smart" => DockMode::Smart,
+            "autohide" => DockMode::AutoHide,
+            "always" => DockMode::Always,
+            _ => default,
+        }
+    }
+}
+
+fn parse_bool(value: &str) -> bool {
+    matches!(value, "true" | "on" | "yes" | "1")
 }
 
 impl Default for Config {
@@ -47,7 +61,7 @@ impl Default for Config {
 }
 
 fn path() -> std::path::PathBuf {
-    crate::log::data_dir().join("config.ini")
+    crate::storage::data_dir().join("config.ini")
 }
 
 impl Config {
@@ -83,24 +97,12 @@ impl Config {
                         c.bar_opacity = v.min(100);
                     }
                 }
-                "bar_blur" => c.bar_blur = matches!(value, "true" | "on" | "yes" | "1"),
-                "dock_enabled" => c.dock_enabled = matches!(value, "true" | "on" | "yes" | "1"),
-                "dock_start" => c.dock_start = matches!(value, "true" | "on" | "yes" | "1"),
-                "tray_enabled" => c.tray_enabled = matches!(value, "true" | "on" | "yes" | "1"),
-                "bar_mode" => {
-                    c.bar_mode = match value {
-                        "autohide" => DockMode::AutoHide,
-                        "smart" => DockMode::Smart,
-                        _ => DockMode::Always,
-                    }
-                }
-                "dock_mode" => {
-                    c.dock_mode = match value {
-                        "autohide" => DockMode::AutoHide,
-                        "always" => DockMode::Always,
-                        _ => DockMode::Smart,
-                    }
-                }
+                "bar_blur" => c.bar_blur = parse_bool(value),
+                "dock_enabled" => c.dock_enabled = parse_bool(value),
+                "dock_start" => c.dock_start = parse_bool(value),
+                "tray_enabled" => c.tray_enabled = parse_bool(value),
+                "bar_mode" => c.bar_mode = DockMode::parse(value, DockMode::Always),
+                "dock_mode" => c.dock_mode = DockMode::parse(value, DockMode::Smart),
                 _ => {}
             }
         }
@@ -119,12 +121,12 @@ impl Config {
     }
 
     pub fn save(&self) {
-        if let Err(e) = crate::log::save_file(&path(), &self.to_text()) {
+        if let Err(e) = crate::storage::save_file(&path(), &self.to_text()) {
             crate::log::write(&format!("could not save config: {e}"));
         }
     }
 
-    fn to_text(&self) -> String {
+    fn to_text(self) -> String {
         format!(
             "# betterUI settings (also changeable by right-clicking the bar)\n\
              # bar_opacity: 0-100, how solid the bar background is\n\

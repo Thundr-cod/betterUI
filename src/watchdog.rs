@@ -42,9 +42,9 @@ pub fn watch(pid: u32) {
         WaitForSingleObject(process, INFINITE);
         let _ = CloseHandle(process);
     }
-    if !crate::taskbar::hidden_by_us() || crate::taskbar::another_instance_running() {
+    if !crate::shell::taskbar::hidden_by_us() || crate::shell::taskbar::another_instance_running() {
         return;
     }
     crate::log::write("betterUI ended without putting the taskbar back (End task or crash); the watchdog restored it");
-    crate::taskbar::restore_and_settle();
+    crate::shell::taskbar::restore_and_settle();
 }

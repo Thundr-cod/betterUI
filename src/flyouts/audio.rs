@@ -11,32 +11,30 @@
 use std::cell::RefCell;
 
 use windows::core::{w, Result};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
-use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, ScreenToClient, PAINTSTRUCT};
-use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, VK_ESCAPE};
+use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DefWindowProcW, IsWindowVisible, KillTimer, PostMessageW, SetForegroundWindow, SetTimer,
-    SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SW_HIDE, SW_SHOW, WA_INACTIVE,
-    WM_ACTIVATE, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_PAINT, WM_TIMER,
+    PostMessageW, WM_ACTIVATE, WM_APP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
+    WM_TIMER,
 };
 
-use crate::audio::{App, Audio, Device, Flow, Level};
-use crate::popup;
-use crate::render::{Color, Gfx, Text, ICON_FONT, TEXT_FONT};
-use crate::ui::{self, R, DIM, FAINT, FG, HOVER, ICON_CHECK, ICON_MIC, ICON_MUTE};
+use super::popup::{self, Popup};
+use super::widgets::{self, Item, SliderStyle};
 use crate::log;
+use crate::system::audio::{App, Audio, Device, Flow, Level};
+use crate::ui::render::{Color, Gfx, ICON_FONT, TEXT_FONT};
+use crate::ui::{self, window, R, DIM, FAINT, FG, HOVER, ICON_CHECK, ICON_MIC, ICON_MUTE};
 
 const WIDTH: f32 = 340.0; // logical pixels
 const MAX_ROWS: usize = 10; // per device list / mixer, keeps the flyout on screen
 const TIMER_REFRESH: usize = 1;
 
 /// Posted to the bar after a change so its speaker icon updates at once.
-pub const WM_AUDIO_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 2;
+pub const WM_AUDIO_CHANGED: u32 = WM_APP + 2;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Tab {
+enum Tab {
     Devices,
     Mixer,
 }
@@ -55,12 +53,6 @@ enum Hit {
     Mute(Target),
 }
 
-enum Item {
-    Rect(R, f32, Color),
-    Circle(f32, f32, f32, Color),
-    Text(Text, f32, f32, Color),
-}
-
 struct Fonts {
     text: IDWriteTextFormat,
     bold: IDWriteTextFormat,
@@ -69,11 +61,9 @@ struct Fonts {
 }
 
 struct Flyout {
-    hwnd: HWND,
+    popup: Popup,
     notify: HWND,
-    gfx: Gfx,
     fonts: Fonts,
-    dpi: u32,
     audio: Audio,
     tab: Tab,
     outputs: Vec<Device>,
@@ -82,9 +72,6 @@ struct Flyout {
     in_level: Option<Level>,
     apps: Vec<App>,
     accent: Color,
-    opacity: f32,
-    width: i32,
-    height: i32,
     hits: Vec<(R, Hit)>,
     tracks: Vec<(Target, f32, f32)>, // slider target, track x, track width
     dragging: Option<Target>,
@@ -96,51 +83,35 @@ thread_local! {
 
 /// Show the flyout under `anchor` (screen rectangle of the bar button), or
 /// hide it if it is already open. `notify` is told about volume changes.
-pub fn toggle(anchor: RECT, notify: HWND, bar_opacity: u32, tab: Option<Tab>) {
+pub fn toggle(anchor: RECT, notify: HWND, bar_opacity: u32) {
     if let Err(e) = ensure_created(notify) {
         log::write(&format!("audio flyout could not be created: {e:?}"));
         return;
     }
-    FLYOUT.with(|cell| {
-        let Ok(mut guard) = cell.try_borrow_mut() else { return };
-        let Some(f) = guard.as_mut() else { return };
-        let visible = unsafe { IsWindowVisible(f.hwnd).as_bool() };
-        if visible && tab.is_none() {
+    window::with_state(&FLYOUT, |f| {
+        if f.popup.visible() {
             f.hide();
         } else {
-            if let Some(t) = tab {
-                f.tab = t;
-            }
-            f.opacity = (bar_opacity.max(70) as f32) / 100.0;
+            f.popup.set_opacity(bar_opacity);
             f.show(anchor);
         }
     });
 }
 
 pub fn hide() {
-    FLYOUT.with(|cell| {
-        if let Ok(mut guard) = cell.try_borrow_mut() {
-            if let Some(f) = guard.as_mut() {
-                f.hide();
-            }
-        }
-    });
+    window::with_state(&FLYOUT, |f| f.hide());
 }
 
 fn ensure_created(notify: HWND) -> Result<()> {
-    let exists = FLYOUT.with(|c| c.borrow().is_some());
-    if exists {
+    if FLYOUT.with(|c| c.borrow().is_some()) {
         return Ok(());
     }
-    let hwnd = popup::create(w!("betterUI.AudioFlyout"), w!("betterUI audio"), Some(wndproc))?;
-    let gfx = Gfx::new()?;
-    let fonts = make_fonts(&gfx, 1.0)?;
+    let popup = Popup::new(w!("betterUI.AudioFlyout"), w!("betterUI audio"), Some(wndproc), Some((TIMER_REFRESH, 1000)))?;
+    let fonts = make_fonts(&popup.gfx, 1.0)?;
     let flyout = Flyout {
-        hwnd,
+        popup,
         notify,
-        gfx,
         fonts,
-        dpi: 96,
         audio: Audio::new()?,
         tab: Tab::Devices,
         outputs: Vec::new(),
@@ -149,9 +120,6 @@ fn ensure_created(notify: HWND) -> Result<()> {
         in_level: None,
         apps: Vec::new(),
         accent: ui::accent(),
-        opacity: 0.85,
-        width: 0,
-        height: 0,
         hits: Vec::new(),
         tracks: Vec::new(),
         dragging: None,
@@ -170,25 +138,12 @@ fn make_fonts(gfx: &Gfx, s: f32) -> Result<Fonts> {
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    if msg == WM_ERASEBKGND {
-        return LRESULT(1);
-    }
-    let handled = FLYOUT.with(|cell| match cell.try_borrow_mut() {
-        Ok(mut guard) => guard.as_mut().and_then(|f| f.handle(msg, wp, lp)),
-        Err(_) => None,
-    });
-    handled.unwrap_or_else(|| DefWindowProcW(hwnd, msg, wp, lp))
-}
-
-fn point_from(lp: LPARAM) -> (i32, i32) {
-    let x = (lp.0 & 0xFFFF) as u16 as i16 as i32;
-    let y = ((lp.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
-    (x, y)
+    window::dispatch(&FLYOUT, hwnd, msg, wp, lp, Flyout::handle)
 }
 
 impl Flyout {
     fn scale(&self) -> f32 {
-        self.dpi as f32 / 96.0
+        self.popup.scale()
     }
 
     fn refresh(&mut self) {
@@ -200,102 +155,63 @@ impl Flyout {
     }
 
     fn show(&mut self, anchor: RECT) {
-        let (work, dpi) = popup::monitor_of(&anchor);
-        if dpi != self.dpi {
-            self.dpi = dpi;
-            match make_fonts(&self.gfx, self.scale()) {
+        let (work, dpi_changed) = self.popup.locate(&anchor);
+        if dpi_changed {
+            match make_fonts(&self.popup.gfx, self.scale()) {
                 Ok(f) => self.fonts = f,
                 Err(e) => log::write(&format!("flyout fonts failed: {e:?}")),
             }
         }
         self.accent = ui::accent();
         self.refresh();
-        let s = self.scale();
-        self.width = (WIDTH * s).round() as i32;
-        self.height = self.measure_height();
-        let (x, y) = popup::place(&anchor, &work, self.width, (6.0 * s).round() as i32);
-        unsafe {
-            let _ = SetWindowPos(self.hwnd, HWND_TOPMOST, x, y, self.width, self.height, SWP_NOACTIVATE);
-            self.gfx.resize(self.width as u32, self.height as u32);
-            let _ = ShowWindow(self.hwnd, SW_SHOW);
-            let _ = SetForegroundWindow(self.hwnd);
-            SetTimer(self.hwnd, TIMER_REFRESH, 1000, None);
-            let _ = InvalidateRect(self.hwnd, None, false);
-        }
+        let w = (WIDTH * self.scale()).round() as i32;
+        let h = self.measure_height();
+        self.popup.show(&anchor, &work, w, h);
     }
 
     fn hide(&mut self) {
-        unsafe {
-            let _ = KillTimer(self.hwnd, TIMER_REFRESH);
-            let _ = ShowWindow(self.hwnd, SW_HIDE);
+        self.popup.hide();
+        if self.dragging.take().is_some() {
+            unsafe {
+                let _ = ReleaseCapture();
+            }
         }
-        self.dragging = None;
     }
 
     /// Resize the window if the content height changed (devices or apps
     /// came or went).
     fn fit_height(&mut self) {
         let h = self.measure_height();
-        if h != self.height {
-            self.height = h;
-            unsafe {
-                let _ = SetWindowPos(
-                    self.hwnd,
-                    HWND_TOPMOST,
-                    0,
-                    0,
-                    self.width,
-                    self.height,
-                    SWP_NOACTIVATE | windows::Win32::UI::WindowsAndMessaging::SWP_NOMOVE,
-                );
-            }
-            self.gfx.resize(self.width as u32, self.height as u32);
-        }
+        self.popup.resize(self.popup.width, h);
     }
 
     fn handle(&mut self, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
         match msg {
             WM_PAINT => {
-                unsafe {
-                    let mut ps = PAINTSTRUCT::default();
-                    BeginPaint(self.hwnd, &mut ps);
-                    if let Err(e) = self.paint() {
-                        log::write(&format!("flyout paint failed: {e:?}"));
-                    }
-                    let _ = EndPaint(self.hwnd, &ps);
-                }
+                let hwnd = self.popup.hwnd;
+                window::paint(hwnd, "audio flyout", || self.paint());
                 Some(LRESULT(0))
             }
-            WM_ACTIVATE => {
-                // Close when the user clicks anywhere else.
-                if (wp.0 & 0xFFFF) as u32 == WA_INACTIVE {
-                    self.hide();
-                }
-                None
-            }
-            WM_KEYDOWN => {
-                if wp.0 as u16 == VK_ESCAPE.0 {
-                    self.hide();
-                }
-                Some(LRESULT(0))
+            m if popup::wants_close(m, wp) => {
+                self.hide();
+                if m == WM_ACTIVATE { None } else { Some(LRESULT(0)) }
             }
             WM_TIMER => {
                 if self.dragging.is_none() {
                     self.refresh();
                     self.fit_height();
-                    self.invalidate();
+                    self.popup.invalidate();
                 }
                 Some(LRESULT(0))
             }
             WM_LBUTTONDOWN => {
-                let (x, y) = point_from(lp);
-                self.mouse_down(x as f32, y as f32);
+                let (x, y) = window::client_point(lp);
+                self.mouse_down(x, y);
                 Some(LRESULT(0))
             }
             WM_MOUSEMOVE => {
                 if let Some(t) = self.dragging {
-                    let (x, _) = point_from(lp);
-                    self.drag_to(t, x as f32);
+                    self.drag_to(t, window::client_point(lp).0);
                 }
                 Some(LRESULT(0))
             }
@@ -308,19 +224,13 @@ impl Flyout {
                 Some(LRESULT(0))
             }
             WM_MOUSEWHEEL => {
-                let delta = ((wp.0 >> 16) & 0xFFFF) as u16 as i16 as f32 / 120.0;
-                let (sx, sy) = point_from(lp);
-                let mut pt = POINT { x: sx, y: sy };
-                unsafe {
-                    let _ = ScreenToClient(self.hwnd, &mut pt);
-                }
-                let (x, y) = (pt.x as f32, pt.y as f32);
+                let (x, y) = window::wheel_point(self.popup.hwnd, lp);
                 let target = self.hits.iter().find_map(|(r, h)| match h {
                     Hit::Slider(t) | Hit::Mute(t) if r.contains(x, y) => Some(*t),
                     _ => None,
                 });
                 if let Some(t) = target {
-                    let v = self.volume_of(t) + delta * 0.02;
+                    let v = self.volume_of(t) + window::wheel_notches(wp) * 0.02;
                     self.set_volume(t, v);
                 }
                 Some(LRESULT(0))
@@ -329,14 +239,8 @@ impl Flyout {
         }
     }
 
-    fn invalidate(&self) {
-        unsafe {
-            let _ = InvalidateRect(self.hwnd, None, false);
-        }
-    }
-
     fn changed(&self) {
-        self.invalidate();
+        self.popup.invalidate();
         unsafe {
             let _ = PostMessageW(self.notify, WM_AUDIO_CHANGED, WPARAM(0), LPARAM(0));
         }
@@ -352,7 +256,7 @@ impl Flyout {
                     self.tab = t;
                     self.refresh();
                     self.fit_height();
-                    self.invalidate();
+                    self.popup.invalidate();
                 }
             }
             Hit::Device(flow, i) => {
@@ -387,7 +291,7 @@ impl Flyout {
             Hit::Slider(t) => {
                 self.dragging = Some(t);
                 unsafe {
-                    SetCapture(self.hwnd);
+                    SetCapture(self.popup.hwnd);
                 }
                 self.drag_to(t, x);
             }
@@ -395,10 +299,8 @@ impl Flyout {
     }
 
     fn drag_to(&mut self, t: Target, x: f32) {
-        if let Some(&(_, tx, tw)) = self.tracks.iter().find(|(tt, _, _)| *tt == t) {
-            if tw > 0.0 {
-                self.set_volume(t, (x - tx) / tw);
-            }
+        if let Some(v) = widgets::track_value(&self.tracks, t, x) {
+            self.set_volume(t, v);
         }
     }
 
@@ -459,6 +361,7 @@ impl Flyout {
     /// the window height and to paint, so the two always agree.
     fn layout(&mut self) -> Result<(Vec<Item>, f32)> {
         let s = self.scale();
+        let gfx = &self.popup.gfx;
         let w = WIDTH * s;
         let pad = 14.0 * s;
         let inner = w - 2.0 * pad;
@@ -466,10 +369,27 @@ impl Flyout {
         let mut hits: Vec<(R, Hit)> = Vec::new();
         let mut tracks: Vec<(Target, f32, f32)> = Vec::new();
         let mut y = pad;
+        let style = SliderStyle {
+            gfx,
+            icon_font: &self.fonts.icon,
+            text_font: &self.fonts.text,
+            accent: self.accent,
+            scale: s,
+            pad,
+            width: w,
+        };
+        let mut slider = |items: &mut Vec<Item>, target: Target, glyph: &str, volume: f32, muted: bool, y: f32| -> Result<()> {
+            let sl = widgets::slider(&style, items, y, glyph, volume, muted)?;
+            hits.push((sl.button, Hit::Mute(target)));
+            hits.push((sl.track_hit, Hit::Slider(target)));
+            tracks.push((target, sl.track_x, sl.track_w));
+            Ok(())
+        };
 
         // Tabs
         let tab_h = 32.0 * s;
         items.push(Item::Rect(R::new(pad, y, inner, tab_h), 8.0 * s, FAINT));
+        let mut tab_hits = Vec::new();
         for (i, (tab, label)) in [(Tab::Devices, "Devices"), (Tab::Mixer, "Mixer")].iter().enumerate() {
             let half = inner / 2.0;
             let r = R::new(pad + half * i as f32, y, half, tab_h);
@@ -477,13 +397,14 @@ impl Flyout {
             if active {
                 items.push(Item::Rect(R::new(r.x + 3.0 * s, r.y + 3.0 * s, r.w - 6.0 * s, r.h - 6.0 * s), 6.0 * s, HOVER));
             }
-            let t = self.gfx.text(label, &self.fonts.bold, tab_h)?;
+            let t = gfx.text(label, &self.fonts.bold, tab_h)?;
             let x = r.x + (r.w - t.width) / 2.0;
             items.push(Item::Text(t, x, y, if active { FG } else { DIM }));
-            hits.push((r, Hit::Tab(*tab)));
+            tab_hits.push((r, Hit::Tab(*tab)));
         }
         y += tab_h + 12.0 * s;
 
+        let mut device_hits = Vec::new();
         match self.tab {
             Tab::Devices => {
                 for flow in [Flow::Output, Flow::Input] {
@@ -491,25 +412,20 @@ impl Flyout {
                         Flow::Output => ("Output", self.out_level, &self.outputs),
                         Flow::Input => ("Input", self.in_level, &self.inputs),
                     };
-                    let t = self.gfx.text(title, &self.fonts.small, 20.0 * s)?;
+                    let t = gfx.text(title, &self.fonts.small, 20.0 * s)?;
                     items.push(Item::Text(t, pad, y, DIM));
                     y += 22.0 * s;
                     if let Some(level) = level {
                         let glyph = match flow {
                             Flow::Output => ui::volume_glyph(level.volume, level.muted),
-                            Flow::Input => {
-                                if level.muted {
-                                    ICON_MUTE
-                                } else {
-                                    ICON_MIC
-                                }
-                            }
+                            Flow::Input if level.muted => ICON_MUTE,
+                            Flow::Input => ICON_MIC,
                         };
-                        self.slider_row(&mut items, &mut hits, &mut tracks, Target::Master(flow), glyph, level.volume, level.muted, y)?;
+                        slider(&mut items, Target::Master(flow), glyph, level.volume, level.muted, y)?;
                         y += 40.0 * s;
                     }
                     if devices.is_empty() {
-                        let t = self.gfx.text("No devices found", &self.fonts.text, 30.0 * s)?;
+                        let t = gfx.text("No devices found", &self.fonts.text, 30.0 * s)?;
                         items.push(Item::Text(t, pad + 4.0 * s, y, DIM));
                         y += 30.0 * s;
                     }
@@ -517,13 +433,13 @@ impl Flyout {
                         let row = R::new(pad, y, inner, 32.0 * s);
                         if dev.is_default {
                             items.push(Item::Rect(row, 6.0 * s, FAINT));
-                            let check = self.gfx.text(ICON_CHECK, &self.fonts.icon, row.h)?;
+                            let check = gfx.text(ICON_CHECK, &self.fonts.icon, row.h)?;
                             items.push(Item::Text(check, row.x + 10.0 * s, row.y, self.accent));
                         }
                         let name_x = row.x + 36.0 * s;
-                        let t = self.gfx.text_fit(&dev.name, &self.fonts.text, row.w - 36.0 * s - 8.0 * s, row.h)?;
+                        let t = gfx.text_fit(&dev.name, &self.fonts.text, row.w - 36.0 * s - 8.0 * s, row.h)?;
                         items.push(Item::Text(t, name_x, row.y, if dev.is_default { FG } else { DIM }));
-                        hits.push((row, Hit::Device(flow, i)));
+                        device_hits.push((row, Hit::Device(flow, i)));
                         y += 34.0 * s;
                     }
                     y += 10.0 * s;
@@ -532,30 +448,24 @@ impl Flyout {
             }
             Tab::Mixer => {
                 if let Some(level) = self.out_level {
-                    let t = self.gfx.text("Master", &self.fonts.small, 20.0 * s)?;
+                    let t = gfx.text("Master", &self.fonts.small, 20.0 * s)?;
                     items.push(Item::Text(t, pad, y, DIM));
                     y += 22.0 * s;
                     let glyph = ui::volume_glyph(level.volume, level.muted);
-                    self.slider_row(&mut items, &mut hits, &mut tracks, Target::Master(Flow::Output), glyph, level.volume, level.muted, y)?;
+                    slider(&mut items, Target::Master(Flow::Output), glyph, level.volume, level.muted, y)?;
                     y += 44.0 * s;
                 }
                 if self.apps.is_empty() {
-                    let t = self.gfx.text("No apps are using audio", &self.fonts.text, 30.0 * s)?;
+                    let t = gfx.text("No apps are using audio", &self.fonts.text, 30.0 * s)?;
                     items.push(Item::Text(t, pad + 4.0 * s, y, DIM));
                     y += 30.0 * s;
                 }
-                let apps: Vec<(String, f32, bool)> = self
-                    .apps
-                    .iter()
-                    .take(MAX_ROWS)
-                    .map(|a| (a.name.clone(), a.volume, a.muted))
-                    .collect();
-                for (i, (name, volume, muted)) in apps.into_iter().enumerate() {
-                    let t = self.gfx.text_fit(&name, &self.fonts.small, inner, 20.0 * s)?;
+                for (i, app) in self.apps.iter().take(MAX_ROWS).enumerate() {
+                    let t = gfx.text_fit(&app.name, &self.fonts.small, inner, 20.0 * s)?;
                     items.push(Item::Text(t, pad, y, FG));
                     y += 22.0 * s;
-                    let glyph = ui::volume_glyph(volume, muted);
-                    self.slider_row(&mut items, &mut hits, &mut tracks, Target::App(i), glyph, volume, muted, y)?;
+                    let glyph = ui::volume_glyph(app.volume, app.muted);
+                    slider(&mut items, Target::App(i), glyph, app.volume, app.muted, y)?;
                     y += 42.0 * s;
                 }
                 y -= 6.0 * s;
@@ -563,73 +473,18 @@ impl Flyout {
         }
         y += pad;
 
+        hits.extend(tab_hits);
+        hits.extend(device_hits);
         self.hits = hits;
         self.tracks = tracks;
         Ok((items, y))
     }
 
-    /// [mute button] [=====o-----] [ 42 ]
-    #[allow(clippy::too_many_arguments)]
-    fn slider_row(
-        &self,
-        items: &mut Vec<Item>,
-        hits: &mut Vec<(R, Hit)>,
-        tracks: &mut Vec<(Target, f32, f32)>,
-        target: Target,
-        glyph: &str,
-        volume: f32,
-        muted: bool,
-        y: f32,
-    ) -> Result<()> {
-        let s = self.scale();
-        let pad = 14.0 * s;
-        let w = WIDTH * s;
-        let row_h = 32.0 * s;
-
-        let btn = R::new(pad, y, row_h, row_h);
-        items.push(Item::Rect(btn, 6.0 * s, FAINT));
-        let icon = self.gfx.text(glyph, &self.fonts.icon, row_h)?;
-        let ix = btn.x + (btn.w - icon.width) / 2.0;
-        items.push(Item::Text(icon, ix, y, if muted { DIM } else { FG }));
-        hits.push((btn, Hit::Mute(target)));
-
-        let pct = self.gfx.text(&format!("{}", (volume * 100.0).round() as i32), &self.fonts.text, row_h)?;
-        let pct_w = 34.0 * s;
-        let tx = btn.x + btn.w + 14.0 * s;
-        let tw = w - pad - pct_w - 10.0 * s - tx;
-        let cy = y + row_h / 2.0;
-        let v = volume.clamp(0.0, 1.0);
-        let fill = if muted { DIM } else { self.accent };
-        items.push(Item::Rect(R::new(tx, cy - 2.0 * s, tw, 4.0 * s), 2.0 * s, Color(1.0, 1.0, 1.0, 0.18)));
-        if v > 0.0 {
-            items.push(Item::Rect(R::new(tx, cy - 2.0 * s, tw * v, 4.0 * s), 2.0 * s, fill));
-        }
-        let knob_x = tx + tw * v;
-        items.push(Item::Circle(knob_x, cy, 8.0 * s, Color(0.27, 0.27, 0.30, 1.0)));
-        items.push(Item::Circle(knob_x, cy, 4.5 * s, fill));
-        hits.push((R::new(tx - 10.0 * s, y, tw + 20.0 * s, row_h), Hit::Slider(target)));
-        tracks.push((target, tx, tw));
-
-        let px = w - pad - pct.width;
-        items.push(Item::Text(pct, px, y, DIM));
-        Ok(())
-    }
-
     fn paint(&mut self) -> Result<()> {
-        if self.width <= 0 || self.height <= 0 {
-            return Ok(());
-        }
         let (items, _) = self.layout()?;
-        let frame = self.gfx.begin(self.hwnd, self.width as u32, self.height as u32)?;
-        let bg = Color(0.10, 0.10, 0.12, self.opacity);
-        frame.round_rect(0.0, 0.0, self.width as f32, self.height as f32, 0.0, bg);
-        for item in &items {
-            match item {
-                Item::Rect(r, radius, c) => frame.round_rect(r.x, r.y, r.w, r.h, *radius, *c),
-                Item::Circle(x, y, radius, c) => frame.circle(*x, *y, *radius, *c),
-                Item::Text(t, x, y, c) => frame.text(t, *x, *y, *c),
-            }
-        }
-        self.gfx.end(frame)
+        let Some(frame) = self.popup.begin() else { return Ok(()) };
+        let frame = frame?;
+        widgets::draw(&frame, &items);
+        self.popup.gfx.end(frame)
     }
 }
