@@ -245,6 +245,27 @@ fn squirrel_app(target: &str, args: &str) -> Option<String> {
     None
 }
 
+/// For an exe that may belong to a Squirrel install (`<root>\Update.exe`,
+/// the app in versioned `<root>\app-1.2.3\` folders, and a stub
+/// `<root>\<App>.exe` that starts the newest version): the install root and
+/// the app's exe name, both lower-case. Only the path's shape is checked.
+fn squirrel_parts(exe: &str) -> Option<(String, String)> {
+    let p = Path::new(exe);
+    let name = p.file_name()?.to_string_lossy().to_lowercase();
+    if name == "update.exe" {
+        return None;
+    }
+    let dir = p.parent()?;
+    let in_app_folder = dir.file_name().map(|f| f.to_string_lossy().to_lowercase().starts_with("app-")).unwrap_or(false);
+    let root = if in_app_folder { dir.parent()? } else { dir };
+    Some((root.to_string_lossy().to_lowercase(), name))
+}
+
+/// `squirrel_parts`, for an install that really is Squirrel's.
+fn squirrel_install(exe: &str) -> Option<(String, String)> {
+    squirrel_parts(exe).filter(|(root, _)| Path::new(root).join("update.exe").exists())
+}
+
 /// PKEY_AppUserModel_ID, built from an existing key of the same type.
 macro_rules! app_id_key {
     () => {{
@@ -485,6 +506,14 @@ fn pin_from_path(path: &str) -> Pin {
         let squirrel_app = squirrel_app(&exe, &args);
         let family = package_family(&exe);
         return Pin { path: path.to_string(), name, exe, squirrel_app, family };
+    } else if let Some((root, app)) = squirrel_install(&lower) {
+        // Pinned by its versioned exe (Discord's app-1.0.9268\Discord.exe),
+        // which an update deletes: pin the install's stub, which starts the
+        // newest version, and match windows like a shortcut to Update.exe.
+        let stub = format!("{root}\\{app}");
+        let path = if Path::new(&stub).exists() { stub } else { path.to_string() };
+        let name = procinfo::app_name(&path);
+        return Pin { path, name, exe: format!("{root}\\update.exe"), squirrel_app: Some(app), family: None };
     } else {
         (procinfo::app_name(path), lower)
     };
@@ -543,12 +572,18 @@ pub fn load_pins() -> Vec<Pin> {
         }
     };
     let pins: Vec<Pin> = paths.iter().map(|p| pin_from_path(p)).collect();
+    // Keep the file in step when a pin was moved (a Squirrel app's versioned
+    // exe to its stub).
+    if pins.iter().zip(&paths).any(|(pin, path)| &pin.path != path) {
+        save_pins(&pins);
+    }
     for p in &pins {
         // File names only, so the log doesn't carry the user name or paths.
         let file = |p: &str| Path::new(p).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
         let (pin, exe) = (file(&p.path), file(&p.exe));
-        // A pin to an exe that is that exe says nothing; log only shortcuts and lookups.
-        if p.squirrel_app.is_none() && pin.eq_ignore_ascii_case(&exe) {
+        // A pin to an exe that is that exe says nothing, nor does a Store
+        // app's (no exe); log only shortcuts and lookups.
+        if p.squirrel_app.is_none() && (pin.eq_ignore_ascii_case(&exe) || exe.is_empty()) {
             continue;
         }
         let starts = p.squirrel_app.as_ref().map(|a| format!(" (starts {a})")).unwrap_or_default();
@@ -742,6 +777,16 @@ mod tests {
         assert_eq!(squirrel_app(t, "--processStart \"Discord.exe\"").as_deref(), Some("discord.exe"));
         assert_eq!(squirrel_app(t, ""), None);
         assert_eq!(squirrel_app("c:\\apps\\code.exe", "--processStart Discord.exe"), None);
+    }
+
+    #[test]
+    fn squirrel_versioned_exe_and_stub_share_a_root() {
+        let root = "c:\\users\\me\\appdata\\local\\discord".to_string();
+        let app = "discord.exe".to_string();
+        let parts = |p: &str| squirrel_parts(p);
+        assert_eq!(parts("C:\\Users\\Me\\AppData\\Local\\Discord\\app-1.0.9268\\Discord.exe"), Some((root.clone(), app.clone())));
+        assert_eq!(parts("c:\\users\\me\\appdata\\local\\discord\\discord.exe"), Some((root, app)));
+        assert_eq!(parts("c:\\users\\me\\appdata\\local\\discord\\update.exe"), None);
     }
 
     #[test]

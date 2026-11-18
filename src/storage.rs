@@ -12,6 +12,14 @@ pub fn data_dir() -> PathBuf {
     dir
 }
 
+/// Delete files older betterUI versions (v0.0.810 era) wrote for tray
+/// debugging; nothing reads them any more.
+pub fn remove_legacy_files() {
+    for name in ["tray_debug.txt", "tray_icons.txt"] {
+        let _ = fs::remove_file(data_dir().join(name));
+    }
+}
+
 /// Replace a file's contents in one step: write a temporary file, then move
 /// it over the old one, so a crash or power loss mid-write can't leave the
 /// file empty.

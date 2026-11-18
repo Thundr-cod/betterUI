@@ -19,14 +19,43 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, GetCursorPos, LoadCursorW,
-    RegisterClassW, SetForegroundWindow, TrackPopupMenu, HMENU, IDC_ARROW, MF_CHECKED, MF_POPUP, MF_SEPARATOR,
-    MF_STRING, MF_UNCHECKED, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_ERASEBKGND,
-    WNDCLASSW, WNDPROC, WS_POPUP,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, GetCursorPos, IsIconic,
+    LoadCursorW, PostMessageW, RegisterClassW, SetForegroundWindow, ShowWindow, TrackPopupMenu, HMENU, IDC_ARROW,
+    MF_CHECKED, MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SW_SHOWNOACTIVATE, TPM_NONOTIFY, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_ERASEBKGND, WM_SIZE, WNDCLASSW, WNDPROC, WS_POPUP,
 };
 
 /// WM_MOUSEACTIVATE answer: clicking the window doesn't take focus.
 pub const MA_NOACTIVATE: isize = 3;
+/// Posted to the bar or dock after something minimized it, to bring it back.
+pub const WM_UNMINIMIZE: u32 = WM_APP + 50;
+const SIZE_MINIMIZED: usize = 1;
+
+/// Nothing should minimize the bar or the dock, but other programs can
+/// (window tools, automation), and a minimized one stayed stuck as a tiny
+/// box. Call from the window procedure: on being minimized it posts
+/// WM_UNMINIMIZE, whose handler calls `unminimize`.
+pub fn watch_minimize(hwnd: HWND, msg: u32, wp: WPARAM) {
+    if msg == WM_SIZE && wp.0 == SIZE_MINIMIZED {
+        crate::log::write(&format!("{} was minimized; restoring it", class_of(hwnd)));
+        unsafe {
+            let _ = PostMessageW(hwnd, WM_UNMINIMIZE, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
+/// Restore a minimized window without taking focus.
+pub fn unminimize(hwnd: HWND) {
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+    }
+}
+
+fn class_of(hwnd: HWND) -> String {
+    crate::system::apps::class_name(hwnd)
+}
 const MONITORINFOF_PRIMARY: u32 = 1;
 
 pub fn register_class(class: PCWSTR, wndproc: WNDPROC) -> Result<()> {
