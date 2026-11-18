@@ -117,7 +117,11 @@ pub fn hide() {
     let current = get_state();
     if !path.exists() {
         // First hide since the last clean restore: remember the user's setting.
-        let _ = crate::log::save_file(&path, &current.to_string());
+        // Without that file nothing could put the taskbar back, so don't hide it.
+        if let Err(e) = crate::log::save_file(&path, &current.to_string()) {
+            crate::log::write(&format!("not hiding the taskbar: could not save its setting: {e}"));
+            return;
+        }
     }
     if current & ABS_AUTOHIDE == 0 {
         set_state(current | ABS_AUTOHIDE);
@@ -132,7 +136,7 @@ pub fn hide() {
 /// Explorer sometimes re-shows the taskbar (for example when the mouse
 /// touches the bottom edge). Called on a short timer to undo that.
 pub fn rehide_if_visible() {
-    if quitting() {
+    if quitting() || !hidden_by_us() {
         return;
     }
     for hwnd in taskbar_windows() {

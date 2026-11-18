@@ -122,15 +122,9 @@ unsafe extern "system" fn on_event(_: HWINEVENTHOOK, event: u32, hwnd: HWND, obj
         return;
     }
     let moved = SetWindowPos(hwnd, HWND::default(), r.left, bottom - (r.bottom - r.top), 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-    log::write(&format!(
-        "Start menu: {},{}-{},{} set to end at {}: {}",
-        r.left,
-        r.top,
-        r.right,
-        r.bottom,
-        bottom,
-        if moved.is_ok() { "ok".to_string() } else { format!("{moved:?}") }
-    ));
+    if let Err(e) = moved {
+        log::write(&format!("Start menu: {},{}-{},{} could not be set to end at {bottom}: {e:?}", r.left, r.top, r.right, r.bottom));
+    }
 }
 
 #[cfg(test)]

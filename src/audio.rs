@@ -6,7 +6,6 @@
 // callback when a device disappears, which is a common source of flaky audio
 // widgets.
 
-use std::collections::HashMap;
 use std::ffi::c_void;
 
 use windows::core::{Interface, PWSTR, Result};
@@ -18,7 +17,7 @@ use windows::Win32::Media::Audio::{
     ISimpleAudioVolume, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
 };
 use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_ALL, STGM_READ};
-use crate::procinfo::{file_description, process_path};
+use crate::procinfo::{app_name, process_path};
 
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -89,7 +88,6 @@ impl App {
 
 pub struct Audio {
     enumerator: IMMDeviceEnumerator,
-    names: HashMap<u32, String>,
 }
 
 unsafe fn take_pwstr(p: PWSTR) -> String {
@@ -104,7 +102,7 @@ unsafe fn take_pwstr(p: PWSTR) -> String {
 impl Audio {
     pub fn new() -> Result<Self> {
         let enumerator = unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
-        Ok(Self { enumerator, names: HashMap::new() })
+        Ok(Self { enumerator })
     }
 
     fn default_device(&self, flow: Flow) -> Option<IMMDevice> {
@@ -224,13 +222,10 @@ impl Audio {
             let sb = b.name == SYSTEM_SOUNDS;
             sa.cmp(&sb).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
-        if self.names.len() > 500 {
-            self.names.clear();
-        }
         apps
     }
 
-    fn apps_inner(&mut self) -> Result<Vec<App>> {
+    fn apps_inner(&self) -> Result<Vec<App>> {
         let mut apps: Vec<App> = Vec::new();
         let Some(dev) = self.default_device(Flow::Output) else { return Ok(apps) };
         unsafe {
@@ -251,7 +246,7 @@ impl Audio {
                     if !display.is_empty() && !display.starts_with('@') {
                         display
                     } else {
-                        self.process_name(pid)
+                        process_path(pid).map(|p| app_name(&p)).unwrap_or_else(|| format!("Process {pid}"))
                     }
                 };
                 let volume = vol.GetMasterVolume().unwrap_or(1.0);
@@ -263,29 +258,6 @@ impl Audio {
             }
         }
         Ok(apps)
-    }
-
-    fn process_name(&mut self, pid: u32) -> String {
-        if let Some(n) = self.names.get(&pid) {
-            return n.clone();
-        }
-        let name = process_path(pid)
-            .map(|path| {
-                file_description(&path).unwrap_or_else(|| {
-                    let stem = std::path::Path::new(&path)
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    let mut c = stem.chars();
-                    match c.next() {
-                        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                        None => stem,
-                    }
-                })
-            })
-            .unwrap_or_else(|| format!("Process {pid}"));
-        self.names.insert(pid, name.clone());
-        name
     }
 }
 

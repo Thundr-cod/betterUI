@@ -163,8 +163,10 @@ impl TrayFlyout {
             if let Ok(f) = self.gfx.text_format(TEXT_FONT, 12.0 * self.scale(), 400) {
                 self.font = f;
             }
-            self.bitmaps.clear();
         }
+        // Keyed by icon handle, which Windows reuses once an app replaces its
+        // icon: start fresh so a reused handle can't show the old picture.
+        self.bitmaps.clear();
         self.items = tray::icons();
         self.hovered = None;
         let (w, h) = self.size_for(self.items.len());
@@ -207,6 +209,7 @@ impl TrayFlyout {
             }
             WM_TRAY_CHANGED => {
                 if unsafe { IsWindowVisible(self.hwnd).as_bool() } {
+                    self.bitmaps.clear(); // see show()
                     self.items = tray::icons();
                     let (w, h) = self.size_for(self.items.len());
                     if (w, h) != (self.width, self.height) {
@@ -321,10 +324,6 @@ impl TrayFlyout {
 
         let result = self.gfx.end(frame);
         self.cells = cells;
-        // Keep the bitmap cache from growing as icons change.
-        if self.bitmaps.len() > 200 {
-            self.bitmaps.clear();
-        }
         result
     }
 }
