@@ -141,7 +141,8 @@ impl Audio {
         out
     }
 
-    /// Volume and mute state of the default device, if there is one.
+    /// Volume and mute state of the default device, if there is one (what
+    /// the master slider shows).
     pub fn level(&self, flow: Flow) -> Option<Level> {
         let ep = self.endpoint(flow)?;
         unsafe {
@@ -152,20 +153,47 @@ impl Audio {
         }
     }
 
+    /// What the master slider controls. Output: every active output device,
+    /// the default one first, so it turns all audio up or down (a headset's
+    /// separate Game and Chat devices included). Input: the default
+    /// microphone.
+    fn master_endpoints(&self, flow: Flow) -> Vec<IAudioEndpointVolume> {
+        match flow {
+            Flow::Output => self
+                .output_devices()
+                .iter()
+                .filter_map(|d| unsafe { d.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None).ok() })
+                .collect(),
+            Flow::Input => self.endpoint(flow).into_iter().collect(),
+        }
+    }
+
+    /// Set the master volume: the default device goes to `v`, and other
+    /// output devices change by the same ratio, so their balance against it
+    /// (e.g. game vs. chat) is kept.
     pub fn set_volume(&self, flow: Flow, v: f32) {
-        let Some(ep) = self.endpoint(flow) else { return };
+        let endpoints = self.master_endpoints(flow);
+        let Some(main) = endpoints.first() else { return };
         let v = v.clamp(0.0, 1.0);
         unsafe {
-            let _ = ep.SetMasterVolumeLevelScalar(v, std::ptr::null());
-            // Dragging the slider up un-mutes, like the Windows flyout.
-            if v > 0.0 && ep.GetMute().map(|m| m.as_bool()).unwrap_or(false) {
-                let _ = ep.SetMute(false, std::ptr::null());
+            let old = main.GetMasterVolumeLevelScalar().unwrap_or(v);
+            for (i, ep) in endpoints.iter().enumerate() {
+                let target = if i == 0 || old < 0.01 {
+                    v
+                } else {
+                    (ep.GetMasterVolumeLevelScalar().unwrap_or(old) * v / old).clamp(0.0, 1.0)
+                };
+                let _ = ep.SetMasterVolumeLevelScalar(target, std::ptr::null());
+                // Dragging the slider up un-mutes, like the Windows flyout.
+                if target > 0.0 && ep.GetMute().map(|m| m.as_bool()).unwrap_or(false) {
+                    let _ = ep.SetMute(false, std::ptr::null());
+                }
             }
         }
     }
 
     pub fn set_muted(&self, flow: Flow, muted: bool) {
-        if let Some(ep) = self.endpoint(flow) {
+        for ep in self.master_endpoints(flow) {
             unsafe {
                 let _ = ep.SetMute(muted, std::ptr::null());
             }
