@@ -93,8 +93,8 @@ fn is_app_window(hwnd: HWND, own_pid: u32) -> bool {
     }
 }
 
-/// Taskbar-style windows, front-most first.
-pub fn app_windows() -> Vec<AppWindow> {
+/// Taskbar-style window handles, front-most first (no process lookups).
+fn app_hwnds() -> Vec<HWND> {
     unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let list = &mut *(lparam.0 as *mut Vec<HWND>);
         list.push(hwnd);
@@ -105,8 +105,14 @@ pub fn app_windows() -> Vec<AppWindow> {
         let _ = EnumWindows(Some(collect), LPARAM(&mut all as *mut Vec<HWND> as isize));
     }
     let own_pid = unsafe { GetCurrentProcessId() };
-    all.into_iter()
-        .filter(|h| is_app_window(*h, own_pid))
+    all.retain(|h| is_app_window(*h, own_pid));
+    all
+}
+
+/// Taskbar-style windows with their exe, front-most first.
+pub fn app_windows() -> Vec<AppWindow> {
+    app_hwnds()
+        .into_iter()
         .map(|hwnd| {
             let mut pid = 0u32;
             unsafe {
@@ -370,6 +376,14 @@ fn in_subfolder(exe: &str, folder: &str) -> bool {
 thread_local! {
     static COMPANIES: std::cell::RefCell<std::collections::HashMap<String, Option<String>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    static NAMES: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// `procinfo::app_name`, remembered per exe: it reads the exe's version info
+/// from disk, and the dock asks for every running app each second.
+fn cached_app_name(exe: &str) -> String {
+    NAMES.with(|c| c.borrow_mut().entry(exe.to_string()).or_insert_with(|| procinfo::app_name(exe)).clone())
 }
 
 /// Do two exes come from the same publisher (version-info "Company")? Keeps
@@ -532,8 +546,13 @@ pub fn load_pins() -> Vec<Pin> {
     for p in &pins {
         // File names only, so the log doesn't carry the user name or paths.
         let file = |p: &str| Path::new(p).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+        let (pin, exe) = (file(&p.path), file(&p.exe));
+        // A pin to an exe that is that exe says nothing; log only shortcuts and lookups.
+        if p.squirrel_app.is_none() && pin.eq_ignore_ascii_case(&exe) {
+            continue;
+        }
         let starts = p.squirrel_app.as_ref().map(|a| format!(" (starts {a})")).unwrap_or_default();
-        crate::log::write(&format!("dock pin {} -> {:?}{starts}", file(&p.path), file(&p.exe)));
+        crate::log::write(&format!("dock pin {pin} -> {exe:?}{starts}"));
     }
     pins
 }
@@ -615,7 +634,7 @@ pub fn dock_items(pins: &[Pin], windows: &[AppWindow]) -> Vec<DockItem> {
         let name = if key_exe.is_empty() {
             window_title(w.hwnd)
         } else {
-            procinfo::app_name(&w.exe)
+            cached_app_name(&w.exe)
         };
         items.push(DockItem {
             name,
@@ -661,7 +680,7 @@ pub fn fullscreen_on(m: &RECT) -> bool {
 
 /// Does any app window overlap `area`?
 pub fn any_window_overlaps(area: &RECT) -> bool {
-    app_windows().iter().filter_map(|w| window_rect(w.hwnd)).any(|r| {
+    app_hwnds().into_iter().filter_map(window_rect).any(|r| {
         r.left < area.right && area.left < r.right && r.top < area.bottom && area.top < r.bottom
     })
 }

@@ -76,6 +76,9 @@ enum Item {
 
 /// Result of a background query.
 struct Fetched {
+    /// `Panel::toggles` when the fetch started, and whether it was a toggle's.
+    toggles: u32,
+    from_toggle: bool,
     radios: RadioStates,
     devices: Option<Vec<BtDevice>>,
     brightness: Option<Option<f32>>,
@@ -100,6 +103,11 @@ struct Panel {
     tx: Sender<Fetched>,
     rx: Receiver<Fetched>,
     fetching: bool,
+    /// Radio toggles started, and how many are still running. A plain
+    /// refresh that started before a toggle, or runs during one, may read
+    /// the old state, so its radio states are ignored.
+    toggles: u32,
+    toggling: u32,
     loaded: bool,
     radios: RadioStates,
     devices: Vec<BtDevice>,
@@ -171,6 +179,8 @@ fn ensure_created(notify: HWND) -> Result<()> {
         tx,
         rx,
         fetching: false,
+        toggles: 0,
+        toggling: 0,
         loaded: false,
         radios: RadioStates::default(),
         devices: Vec::new(),
@@ -253,7 +263,10 @@ impl Panel {
         self.fetching = true;
         let want_devices = self.kind == Kind::Bluetooth;
         let monitor = self.monitor;
+        let toggles = self.toggles;
         spawn_fetch(self.hwnd, self.tx.clone(), move || Fetched {
+            toggles,
+            from_toggle: false,
             radios: radios::states(),
             devices: if want_devices { Some(bluetooth::paired()) } else { None },
             brightness: if with_brightness { Some(brightness::read(monitor)) } else { None },
@@ -339,7 +352,13 @@ impl Panel {
                 while let Ok(f) = self.rx.try_recv() {
                     self.fetching = false;
                     self.loaded = true;
-                    self.radios = f.radios;
+                    if f.from_toggle {
+                        self.toggling = self.toggling.saturating_sub(1);
+                    }
+                    let current = f.toggles == self.toggles && (f.from_toggle || self.toggling == 0);
+                    if current {
+                        self.radios = f.radios;
+                    }
                     if let Some(d) = f.devices {
                         self.devices = d;
                     }
@@ -470,9 +489,14 @@ impl Panel {
         self.invalidate();
         let want_devices = self.kind == Kind::Bluetooth;
         self.fetching = true;
+        self.toggles += 1;
+        self.toggling += 1;
+        let toggles = self.toggles;
         spawn_fetch(self.hwnd, self.tx.clone(), move || {
             radios::set(kind, !on);
             Fetched {
+                toggles,
+                from_toggle: true,
                 radios: radios::states(),
                 devices: if want_devices { Some(bluetooth::paired()) } else { None },
                 brightness: None,

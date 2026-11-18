@@ -64,6 +64,7 @@ const DIM: Color = Color(1.0, 1.0, 1.0, 0.55);
 
 // Segoe Fluent Icons glyphs
 const ICON_WIFI: &str = "\u{E701}";
+const ICON_RAM: &str = "\u{EEA0}"; // a memory module
 const ICON_ETHERNET: &str = "\u{E839}";
 const ICON_BLUETOOTH: &str = "\u{E702}";
 const ICON_CONTROL_CENTER: &str = "\u{E9E9}";
@@ -564,13 +565,12 @@ impl Bar {
             changed = true;
         }
         if self.ticks % 2 == 0 {
-            let memory = sysinfo::memory();
+            let (memory, network) = shared_readouts();
             // Only redraw when the shown value (one decimal) changes.
             if (memory.used_gb * 10.0).round() != (self.memory.used_gb * 10.0).round() {
                 changed = true;
             }
             self.memory = memory;
-            let network = sysinfo::network();
             if network != self.network {
                 self.network = network;
                 changed = true;
@@ -876,7 +876,7 @@ impl Bar {
         let pill_h = h - 2.0 * pill_y;
 
         // Build all text first (needs only &self), then draw.
-        let mem_label = self.gfx.text("RAM", &self.fonts.bold, pill_h)?;
+        let mem_label = self.gfx.text(ICON_RAM, &self.fonts.icon, pill_h)?;
         let mem_value = self.gfx.text(
             &format!("{:.1} / {:.0} GB", self.memory.used_gb, self.memory.total_gb),
             &self.fonts.text,
@@ -973,24 +973,43 @@ fn make_formats(gfx: &Gfx, scale: f32) -> Result<Formats> {
     })
 }
 
+/// Memory and network, read once for all bars: every monitor's bar ticks on
+/// this thread within the same second, so the first read is reused.
+fn shared_readouts() -> (sysinfo::Memory, sysinfo::Network) {
+    use std::time::{Duration, Instant};
+    thread_local! {
+        static LAST: std::cell::Cell<Option<(Instant, sysinfo::Memory, sysinfo::Network)>> = const { std::cell::Cell::new(None) };
+    }
+    LAST.with(|last| {
+        if let Some((at, m, n)) = last.get() {
+            if at.elapsed() < Duration::from_millis(900) {
+                return (m, n);
+            }
+        }
+        let (m, n) = (sysinfo::memory(), sysinfo::network());
+        last.set(Some((Instant::now(), m, n)));
+        (m, n)
+    })
+}
+
+/// "Tue Nov 17   4:09 PM", in the user's language and Windows time format
+/// (12- or 24-hour).
 fn clock_text() -> String {
-    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
+    use windows::core::PCWSTR;
+    use windows::Win32::Globalization::{GetDateFormatEx, GetTimeFormatEx, ENUM_DATE_FORMATS_FLAGS, TIME_NOSECONDS};
     let t = unsafe { GetLocalTime() };
-    let hour12 = match t.wHour % 12 {
-        0 => 12,
-        h => h,
+    let (mut date, mut time) = ([0u16; 64], [0u16; 64]);
+    let (d, h) = unsafe {
+        (
+            // Null locale = the user's own; the picture keeps the bar's short layout.
+            GetDateFormatEx(PCWSTR::null(), ENUM_DATE_FORMATS_FLAGS(0), Some(&t), w!("ddd MMM d"), Some(&mut date), PCWSTR::null()),
+            GetTimeFormatEx(PCWSTR::null(), TIME_NOSECONDS, Some(&t), PCWSTR::null(), Some(&mut time)),
+        )
     };
-    let ampm = if t.wHour < 12 { "AM" } else { "PM" };
-    format!(
-        "{} {} {}   {}:{:02} {}",
-        DAYS[t.wDayOfWeek as usize % 7],
-        MONTHS[(t.wMonth as usize + 11) % 12],
-        t.wDay,
-        hour12,
-        t.wMinute,
-        ampm
-    )
+    if d <= 0 || h <= 0 {
+        return format!("{}:{:02}", t.wHour, t.wMinute);
+    }
+    // The counts include the closing null.
+    let text = |buf: &[u16], n: i32| String::from_utf16_lossy(&buf[..(n as usize).saturating_sub(1)]);
+    format!("{}   {}", text(&date, d), text(&time, h))
 }

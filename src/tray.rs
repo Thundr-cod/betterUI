@@ -108,9 +108,6 @@ struct Host {
     icons: Vec<TrayIcon>,
     taskbar_created: u32,
     last_broadcast: Option<Instant>,
-    /// Whether ours was the front "Shell_TrayWnd" at the last check, so only
-    /// changes get logged (on some PCs Explorer takes the spot every second).
-    was_front: bool,
     /// Told when the icon list changes (the dropdown).
     on_change: Option<fn()>,
 }
@@ -198,11 +195,10 @@ fn start_inner(on_change: fn()) -> Result<()> {
         HOST_HWND.store(hwnd.0 as isize, std::sync::atomic::Ordering::SeqCst);
         let taskbar_created = RegisterWindowMessageW(w!("TaskbarCreated"));
         HOST.with(|h| {
-            *h.borrow_mut() = Some(Host { icons: Vec::new(), taskbar_created, last_broadcast: None, was_front: true, on_change: Some(on_change) })
+            *h.borrow_mut() = Some(Host { icons: Vec::new(), taskbar_created, last_broadcast: None, on_change: Some(on_change) })
         });
         bring_to_front(hwnd);
         SetTimer(hwnd, TIMER_TOPMOST, 1000, None);
-        debug(&format!("tray host started; front window is ours: {}", is_front(hwnd)));
         broadcast_taskbar_created(taskbar_created);
         // Some apps answer slowly or miss the first request: ask once more.
         SetTimer(hwnd, TIMER_REBROADCAST, 4000, None);
@@ -219,57 +215,6 @@ fn bring_to_front(hwnd: HWND) {
 /// Is ours the "Shell_TrayWnd" that apps will find (the one in front)?
 fn is_front(ours: HWND) -> bool {
     unsafe { FindWindowW(w!("Shell_TrayWnd"), None).map(|h| h == ours).unwrap_or(false) }
-}
-
-// ---- Diagnostics ------------------------------------------------------------
-// tray_debug.txt: every tray message received (most recent 400).
-// tray_icons.txt: the current icon list.
-// Both in %APPDATA%\betterUI, to diagnose apps whose icons don't show up.
-
-thread_local! {
-    static DEBUG_LINES: RefCell<std::collections::VecDeque<String>> = const { RefCell::new(std::collections::VecDeque::new()) };
-    static STARTED: Instant = Instant::now();
-}
-
-fn debug(line: &str) {
-    let secs = STARTED.with(|s| s.elapsed().as_secs_f32());
-    let text = DEBUG_LINES.with(|d| {
-        let mut d = d.borrow_mut();
-        d.push_back(format!("[{secs:7.2}s] {line}"));
-        while d.len() > 400 {
-            d.pop_front();
-        }
-        d.iter().cloned().collect::<Vec<_>>().join("\n")
-    });
-    let _ = std::fs::write(crate::log::data_dir().join("tray_debug.txt"), text + "\n");
-}
-
-fn exe_of(hwnd: HWND) -> String {
-    let mut pid = 0u32;
-    unsafe {
-        GetWindowThreadProcessId(hwnd, Some(&mut pid));
-    }
-    crate::procinfo::process_path(pid)
-        .and_then(|p| std::path::Path::new(&p).file_name().map(|f| f.to_string_lossy().to_string()))
-        .unwrap_or_else(|| format!("pid {pid}"))
-}
-
-fn dump_icons(icons: &[TrayIcon]) {
-    let mut text = String::from("# Tray icons betterUI knows about (shown = appears in the dropdown)\n");
-    for i in icons {
-        text.push_str(&format!(
-            "{} | uid {} | {} | shown={} hidden={} icon={} version={} | {}\n",
-            exe_of(i.owner),
-            i.uid,
-            if i.guid.is_some() { "guid" } else { "id" },
-            !i.hidden && i.icon.is_some(),
-            i.hidden,
-            i.icon.is_some(),
-            i.version,
-            i.tip.lines().next().unwrap_or("")
-        ));
-    }
-    let _ = std::fs::write(crate::log::data_dir().join("tray_icons.txt"), text);
 }
 
 fn broadcast_taskbar_created(msg: u32) {
@@ -383,23 +328,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_TIMER => {
             match wp.0 {
                 TIMER_TOPMOST => {
-                    let front = is_front(hwnd);
-                    let was = HOST.with(|h| {
-                        h.try_borrow_mut().ok().and_then(|mut g| g.as_mut().map(|x| std::mem::replace(&mut x.was_front, front)))
-                    });
-                    if !front {
-                        if was == Some(true) {
-                            debug("Explorer's taskbar is in front of ours; taking the front spot back (logged once until it changes)");
-                        }
+                    if !is_front(hwnd) {
                         bring_to_front(hwnd);
-                    } else if was == Some(false) {
-                        debug("ours is the front taskbar window again");
                     }
                 }
                 TIMER_REBROADCAST => {
                     let _ = KillTimer(hwnd, TIMER_REBROADCAST);
                     bring_to_front(hwnd);
-                    debug(&format!("asking apps to re-send icons; front window is ours: {}", is_front(hwnd)));
                     let msg = HOST.with(|h| h.try_borrow().ok().and_then(|g| g.as_ref().map(|x| x.taskbar_created)));
                     if let Some(m) = msg {
                         broadcast_taskbar_created(m);
@@ -419,7 +354,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             // re-send their icons, after Explorer has settled.
             let ours = last.map(|t| t.elapsed().as_secs_f32() < 3.0).unwrap_or(false);
             if !ours {
-                debug("TaskbarCreated from Explorer (Explorer restarted?)");
                 SetTimer(hwnd, TIMER_REBROADCAST, 2000, None);
             }
             return LRESULT(0);
@@ -463,19 +397,9 @@ fn parse(cds: &COPYDATASTRUCT) -> Option<TrayMessage> {
 }
 
 fn record(cds: &COPYDATASTRUCT) {
-    let size = std::mem::size_of::<TrayMessage>();
     let Some(data) = parse(cds) else { return };
     let message = data.message;
     let nid = data.nid;
-    let kind = match message {
-        NIM_ADD => "ADD",
-        NIM_MODIFY => "MODIFY",
-        NIM_DELETE => "DELETE",
-        3 => "SETFOCUS",
-        NIM_SETVERSION => "SETVERSION",
-        _ => "?",
-    };
-    let owner = HWND(handle(nid.hwnd));
 
     let changed = HOST.with(|h| {
         let Ok(mut g) = h.try_borrow_mut() else { return false };
@@ -515,9 +439,6 @@ fn record(cds: &COPYDATASTRUCT) {
                     }
                     if nid.hicon != 0 {
                         icon.icon = unsafe { CopyIcon(HICON(handle(nid.hicon))).ok() };
-                        if icon.icon.is_none() {
-                            debug(&format!("  could not copy icon handle {:#x}", nid.hicon));
-                        }
                     }
                 }
                 if nid.flags & NIF_TIP != 0 {
@@ -550,25 +471,7 @@ fn record(cds: &COPYDATASTRUCT) {
             _ => false,
         }
     });
-    debug(&format!(
-        "{kind:10} {:24} uid={} flags={:#04x} icon={} state={:#x}/{:#x} cb={} size={}",
-        exe_of(owner),
-        nid.uid,
-        nid.flags,
-        nid.hicon != 0,
-        nid.state,
-        nid.state_mask,
-        cds.cbData,
-        size
-    ));
     if changed {
-        HOST.with(|h| {
-            if let Ok(g) = h.try_borrow() {
-                if let Some(host) = g.as_ref() {
-                    dump_icons(&host.icons);
-                }
-            }
-        });
         let cb = HOST.with(|h| h.try_borrow().ok().and_then(|g| g.as_ref().and_then(|x| x.on_change)));
         if let Some(cb) = cb {
             cb();

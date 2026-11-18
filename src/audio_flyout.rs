@@ -11,30 +11,19 @@
 use std::cell::RefCell;
 
 use windows::core::{w, Result};
-use windows::Win32::Foundation::{BOOL, HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM};
-use windows::Win32::Graphics::Dwm::{
-    DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE,
-    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
-};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
-use windows::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, GetMonitorInfoW, InvalidateRect, MonitorFromRect, ScreenToClient,
-    MONITORINFO, MONITOR_DEFAULTTOPRIMARY, PAINTSTRUCT,
-};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::MARGINS;
-use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, ScreenToClient, PAINTSTRUCT};
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, VK_ESCAPE};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, IsWindowVisible, KillTimer, LoadCursorW, PostMessageW,
-    RegisterClassW, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, HWND_TOPMOST,
-    IDC_ARROW, SWP_NOACTIVATE, SW_HIDE, SW_SHOW, WA_INACTIVE, WM_ACTIVATE, WM_ERASEBKGND,
-    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_TIMER,
-    WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    DefWindowProcW, IsWindowVisible, KillTimer, PostMessageW, SetForegroundWindow, SetTimer,
+    SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SW_HIDE, SW_SHOW, WA_INACTIVE,
+    WM_ACTIVATE, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_PAINT, WM_TIMER,
 };
 
 use crate::audio::{App, Audio, Device, Flow, Level};
-use crate::backdrop;
+use crate::popup;
 use crate::render::{Color, Gfx, Text, ICON_FONT, TEXT_FONT};
 use crate::ui::{self, R, DIM, FAINT, FG, HOVER, ICON_CHECK, ICON_MIC, ICON_MUTE};
 use crate::log;
@@ -143,74 +132,31 @@ fn ensure_created(notify: HWND) -> Result<()> {
     if exists {
         return Ok(());
     }
-    unsafe {
-        let hinstance = GetModuleHandleW(None)?.into();
-        let class = w!("betterUI.AudioFlyout");
-        let wc = WNDCLASSW {
-            lpfnWndProc: Some(wndproc),
-            hInstance: hinstance,
-            lpszClassName: class,
-            hCursor: LoadCursorW(None, IDC_ARROW)?,
-            ..Default::default()
-        };
-        RegisterClassW(&wc);
-        let hwnd = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
-            class,
-            w!("betterUI audio"),
-            WS_POPUP,
-            0,
-            0,
-            100,
-            100,
-            None,
-            None,
-            hinstance,
-            None,
-        )?;
-        let dark: BOOL = TRUE;
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_USE_IMMERSIVE_DARK_MODE,
-            &dark as *const _ as *const _,
-            std::mem::size_of::<BOOL>() as u32,
-        );
-        let corners = DWMWCP_ROUND;
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE,
-            &corners as *const _ as *const _,
-            std::mem::size_of_val(&corners) as u32,
-        );
-        let margins = MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 };
-        let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
-        backdrop::set_blur(hwnd, true);
-
-        let gfx = Gfx::new()?;
-        let fonts = make_fonts(&gfx, 1.0)?;
-        let flyout = Flyout {
-            hwnd,
-            notify,
-            gfx,
-            fonts,
-            dpi: 96,
-            audio: Audio::new()?,
-            tab: Tab::Devices,
-            outputs: Vec::new(),
-            inputs: Vec::new(),
-            out_level: None,
-            in_level: None,
-            apps: Vec::new(),
-            accent: ui::accent(),
-            opacity: 0.85,
-            width: 0,
-            height: 0,
-            hits: Vec::new(),
-            tracks: Vec::new(),
-            dragging: None,
-        };
-        FLYOUT.with(|c| *c.borrow_mut() = Some(flyout));
-    }
+    let hwnd = popup::create(w!("betterUI.AudioFlyout"), w!("betterUI audio"), Some(wndproc))?;
+    let gfx = Gfx::new()?;
+    let fonts = make_fonts(&gfx, 1.0)?;
+    let flyout = Flyout {
+        hwnd,
+        notify,
+        gfx,
+        fonts,
+        dpi: 96,
+        audio: Audio::new()?,
+        tab: Tab::Devices,
+        outputs: Vec::new(),
+        inputs: Vec::new(),
+        out_level: None,
+        in_level: None,
+        apps: Vec::new(),
+        accent: ui::accent(),
+        opacity: 0.85,
+        width: 0,
+        height: 0,
+        hits: Vec::new(),
+        tracks: Vec::new(),
+        dragging: None,
+    };
+    FLYOUT.with(|c| *c.borrow_mut() = Some(flyout));
     Ok(())
 }
 
@@ -254,31 +200,21 @@ impl Flyout {
     }
 
     fn show(&mut self, anchor: RECT) {
-        unsafe {
-            let hmon = MonitorFromRect(&anchor, MONITOR_DEFAULTTOPRIMARY);
-            let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-            let _ = GetMonitorInfoW(hmon, &mut mi);
-            let (mut dx, mut dy) = (96u32, 96u32);
-            let _ = GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
-            if dx != self.dpi && dx > 0 {
-                self.dpi = dx;
-                match make_fonts(&self.gfx, self.scale()) {
-                    Ok(f) => self.fonts = f,
-                    Err(e) => log::write(&format!("flyout fonts failed: {e:?}")),
-                }
+        let (work, dpi) = popup::monitor_of(&anchor);
+        if dpi != self.dpi {
+            self.dpi = dpi;
+            match make_fonts(&self.gfx, self.scale()) {
+                Ok(f) => self.fonts = f,
+                Err(e) => log::write(&format!("flyout fonts failed: {e:?}")),
             }
-            self.accent = ui::accent();
-            self.refresh();
-            let s = self.scale();
-            self.width = (WIDTH * s).round() as i32;
-            self.height = self.measure_height();
-
-            let work = mi.rcWork;
-            let gap = (6.0 * s).round() as i32;
-            let mut x = anchor.right - self.width;
-            x = x.clamp(work.left + gap, (work.right - self.width - gap).max(work.left));
-            let y = work.top.max(anchor.bottom) + gap;
-
+        }
+        self.accent = ui::accent();
+        self.refresh();
+        let s = self.scale();
+        self.width = (WIDTH * s).round() as i32;
+        self.height = self.measure_height();
+        let (x, y) = popup::place(&anchor, &work, self.width, (6.0 * s).round() as i32);
+        unsafe {
             let _ = SetWindowPos(self.hwnd, HWND_TOPMOST, x, y, self.width, self.height, SWP_NOACTIVATE);
             self.gfx.resize(self.width as u32, self.height as u32);
             let _ = ShowWindow(self.hwnd, SW_SHOW);

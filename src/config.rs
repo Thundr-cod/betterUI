@@ -3,7 +3,7 @@
 
 use std::fs;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Config {
     /// Bar background opacity, 0-100 (%). 100 = solid.
     pub bar_opacity: u32,
@@ -58,15 +58,18 @@ impl Config {
     /// None when config.ini exists but can't be read (locked, bad encoding),
     /// so callers don't save defaults over the user's settings.
     pub fn load_checked() -> Option<Self> {
-        let mut c = Config::default();
-        let text = match fs::read_to_string(path()) {
-            Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(c),
+        match fs::read_to_string(path()) {
+            Ok(text) => Some(Self::parse(&text)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Config::default()),
             Err(e) => {
                 crate::log::write(&format!("could not read config.ini: {e}"));
-                return None;
+                None
             }
-        };
+        }
+    }
+
+    fn parse(text: &str) -> Self {
+        let mut c = Config::default();
         for line in text.lines() {
             let line = line.trim();
             if line.starts_with('#') || line.starts_with(';') {
@@ -101,7 +104,7 @@ impl Config {
                 _ => {}
             }
         }
-        Some(c)
+        c
     }
 
     /// Load the saved settings, change them, save, and return the result.
@@ -116,7 +119,13 @@ impl Config {
     }
 
     pub fn save(&self) {
-        let text = format!(
+        if let Err(e) = crate::log::save_file(&path(), &self.to_text()) {
+            crate::log::write(&format!("could not save config: {e}"));
+        }
+    }
+
+    fn to_text(&self) -> String {
+        format!(
             "# betterUI settings (also changeable by right-clicking the bar)\n\
              # bar_opacity: 0-100, how solid the bar background is\n\
              bar_opacity = {}\n\
@@ -139,9 +148,29 @@ impl Config {
             self.dock_start,
             self.bar_mode.as_str(),
             self.tray_enabled
-        );
-        if let Err(e) = crate::log::save_file(&path(), &text) {
-            crate::log::write(&format!("could not save config: {e}"));
-        }
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_setting_survives_save_and_load() {
+        // Every field differs from the default, so a key that save() writes
+        // but parse() misses (or misspells) fails here.
+        let c = Config {
+            bar_opacity: 35,
+            bar_blur: false,
+            dock_enabled: false,
+            dock_mode: DockMode::AutoHide,
+            dock_start: false,
+            bar_mode: DockMode::Smart,
+            tray_enabled: false,
+        };
+        assert_eq!(Config::parse(&c.to_text()), c);
+        let other = Config { dock_mode: DockMode::Always, bar_mode: DockMode::AutoHide, ..c };
+        assert_eq!(Config::parse(&other.to_text()), other);
     }
 }
