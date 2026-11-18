@@ -12,7 +12,7 @@ use windows::core::{Interface, PWSTR, Result};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
-    eCapture, eConsole, eRender, AudioSessionStateExpired,
+    eCapture, eConsole, eRender, AudioSessionStateActive, AudioSessionStateExpired,
     EDataFlow, IAudioSessionControl2, IAudioSessionManager2, IMMDevice, IMMDeviceEnumerator,
     ISimpleAudioVolume, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
 };
@@ -54,6 +54,8 @@ pub struct App {
     pub name: String,
     pub volume: f32,
     pub muted: bool,
+    /// Whether one of its sessions is playing right now (its volume is shown).
+    playing: bool,
     controls: Vec<ISimpleAudioVolume>,
 }
 
@@ -175,7 +177,10 @@ impl Audio {
         crate::system::policy::set_default_endpoint(id);
     }
 
-    /// Apps with audio sessions on the default output device.
+    /// Apps with audio sessions on any active output device. An app that
+    /// plays on several devices (Discord: voice on a headset, notifications
+    /// on the default speakers) is one row, and changing it changes all of
+    /// its sessions.
     pub fn apps(&mut self) -> Vec<App> {
         let mut apps = self.apps_inner().unwrap_or_default();
         apps.sort_by(|a, b| {
@@ -186,17 +191,49 @@ impl Audio {
         apps
     }
 
+    /// Every active output device, the default one first.
+    fn output_devices(&self) -> Vec<IMMDevice> {
+        let default_id = self.default_device(Flow::Output).and_then(|d| unsafe { d.GetId().ok().map(|p| take_pwstr(p)) });
+        let mut out = Vec::new();
+        unsafe {
+            let Ok(col) = self.enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) else { return out };
+            for i in 0..col.GetCount().unwrap_or(0) {
+                let Ok(dev) = col.Item(i) else { continue };
+                let is_default = dev.GetId().ok().map(|p| take_pwstr(p)) == default_id;
+                if is_default {
+                    out.insert(0, dev);
+                } else {
+                    out.push(dev);
+                }
+            }
+        }
+        out
+    }
+
     fn apps_inner(&self) -> Result<Vec<App>> {
         let mut apps: Vec<App> = Vec::new();
-        let Some(dev) = self.default_device(Flow::Output) else { return Ok(apps) };
+        for dev in self.output_devices() {
+            if let Err(e) = Self::add_sessions(&dev, &mut apps) {
+                crate::log::write(&format!("audio sessions of a device unavailable: {e:?}"));
+            }
+        }
+        Ok(apps)
+    }
+
+    /// Add one device's audio sessions to `apps`, merged by app name. The
+    /// row shows the volume of a session that is playing, if any, else the
+    /// first one found (default device first).
+    fn add_sessions(dev: &IMMDevice, apps: &mut Vec<App>) -> Result<()> {
         unsafe {
             let mgr = dev.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None)?;
             let sessions = mgr.GetSessionEnumerator()?;
             for i in 0..sessions.GetCount()? {
                 let Ok(ctl) = sessions.GetSession(i) else { continue };
-                if ctl.GetState().map(|s| s == AudioSessionStateExpired).unwrap_or(true) {
+                let Ok(state) = ctl.GetState() else { continue };
+                if state == AudioSessionStateExpired {
                     continue;
                 }
+                let playing = state == AudioSessionStateActive;
                 let Ok(ctl2) = ctl.cast::<IAudioSessionControl2>() else { continue };
                 let Ok(vol) = ctl.cast::<ISimpleAudioVolume>() else { continue };
                 let pid = ctl2.GetProcessId().unwrap_or(0);
@@ -213,12 +250,19 @@ impl Audio {
                 let volume = vol.GetMasterVolume().unwrap_or(1.0);
                 let muted = vol.GetMute().map(|m| m.as_bool()).unwrap_or(false);
                 match apps.iter_mut().find(|a| a.name == name) {
-                    Some(app) => app.controls.push(vol),
-                    None => apps.push(App { name, volume, muted, controls: vec![vol] }),
+                    Some(app) => {
+                        if playing && !app.playing {
+                            app.volume = volume;
+                            app.muted = muted;
+                            app.playing = true;
+                        }
+                        app.controls.push(vol);
+                    }
+                    None => apps.push(App { name, volume, muted, playing, controls: vec![vol] }),
                 }
             }
         }
-        Ok(apps)
+        Ok(())
     }
 }
 
