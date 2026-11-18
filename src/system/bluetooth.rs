@@ -13,13 +13,6 @@ pub struct BtDevice {
 }
 
 pub fn paired() -> Vec<BtDevice> {
-    if crate::audio::demo() {
-        return vec![
-            BtDevice { name: "Arctis Nova 7".into(), connected: true },
-            BtDevice { name: "MX Master 3S".into(), connected: true },
-            BtDevice { name: "Xbox Wireless Controller".into(), connected: false },
-        ];
-    }
     let mut out: Vec<BtDevice> = Vec::new();
     for found in [classic(), low_energy()] {
         match found {

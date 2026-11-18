@@ -42,7 +42,7 @@ impl Icons {
     }
 
     /// A bitmap from pixels the icon loader produced on its thread.
-    pub fn from_pixels(&self, p: &crate::icon_loader::Pixels) -> Option<IWICBitmapSource> {
+    pub fn bitmap_from_pixels(&self, p: &crate::ui::icon_loader::Pixels) -> Option<IWICBitmapSource> {
         unsafe {
             let bitmap = self
                 .wic
@@ -98,19 +98,19 @@ impl Icons {
             if hicon == 0 {
                 None
             } else {
-                self.from_hicon(HICON(hicon as *mut _), size).ok()
+                self.load_hicon(HICON(hicon as *mut _), size).ok()
             }
         };
         // Store apps (Settings, Calculator, Clock …) give their frame window
         // no icon; load the app's own icon from its entry in the Apps folder.
         let loaded = loaded.or_else(|| {
-            let id = crate::apps::window_app_id(hwnd);
+            let id = crate::system::apps::window_app_id(hwnd);
             let result = id.as_ref().map(|id| self.load_path(&format!("shell:AppsFolder\\{id}"), size));
             // Note each window's first miss, so a missing icon can be traced.
             if !matches!(result, Some(Ok(_))) && self.logged_misses.insert(hwnd.0 as isize) {
                 crate::log::write(&format!(
                     "no icon for window \"{}\": app id {:?}, {}",
-                    crate::apps::class_name(hwnd),
+                    crate::system::apps::class_name(hwnd),
                     id,
                     match &result {
                         Some(Err(e)) => format!("loading it failed: {e}"),
@@ -157,7 +157,7 @@ impl Icons {
             let stride = w * 4;
             let mut pixels = vec![0u8; (stride * h) as usize];
             source.CopyPixels(std::ptr::null(), stride, &mut pixels)?;
-            let straight = pixels.chunks_exact(4).any(|p| p[0] > p[3] || p[1] > p[3] || p[2] > p[3]);
+            let straight = pixels.as_chunks::<4>().0.iter().any(|p| p[0] > p[3] || p[1] > p[3] || p[2] > p[3]);
             let format = if straight { GUID_WICPixelFormat32bppBGRA } else { GUID_WICPixelFormat32bppPBGRA };
             let bitmap = self.wic.CreateBitmapFromMemory(w, h, &format, stride, &pixels)?;
             bitmap.cast()
@@ -166,10 +166,10 @@ impl Icons {
 
     /// Convert an icon handle (e.g. a tray icon) without caching it.
     pub fn for_hicon(&self, hicon: HICON, size: i32) -> Option<IWICBitmapSource> {
-        self.from_hicon(hicon, size).ok()
+        self.load_hicon(hicon, size).ok()
     }
 
-    fn from_hicon(&self, hicon: HICON, size: i32) -> Result<IWICBitmapSource> {
+    fn load_hicon(&self, hicon: HICON, size: i32) -> Result<IWICBitmapSource> {
         unsafe {
             let bitmap = self.wic.CreateBitmapFromHICON(hicon)?;
             self.to_pbgra(&bitmap.cast()?, size)

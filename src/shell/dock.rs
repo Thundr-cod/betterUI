@@ -12,41 +12,38 @@
 // is already in front. Middle-click opens a new window.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
-use windows::core::{w, Result, HSTRING};
+use windows::core::{w, Result};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Direct2D::ID2D1Bitmap;
 use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
-use windows::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, GetMonitorInfoW, InvalidateRect, MonitorFromPoint, MONITORINFO,
-    MONITOR_DEFAULTTOPRIMARY, PAINTSTRUCT,
-};
-use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows::Win32::Graphics::Dwm::DWMWCP_ROUND;
+use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTOPRIMARY};
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, GetCursorPos,
-    GetForegroundWindow, GetWindowThreadProcessId, IsIconic, KillTimer, LoadCursorW, PostMessageW, RegisterClassW,
-    SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TrackPopupMenu, HWND_TOPMOST,
-    IDC_ARROW, MF_CHECKED, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, SWP_NOACTIVATE, SW_HIDE,
-    SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    WM_APP, WM_CLOSE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONUP, WM_MBUTTONUP,
-    WM_MOUSEACTIVATE, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    DestroyWindow, GetCursorPos, GetForegroundWindow, GetWindowThreadProcessId, IsIconic, PostMessageW,
+    SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SW_MINIMIZE,
+    SW_RESTORE, SW_SHOWNA, WM_APP, WM_CLOSE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONUP, WM_MBUTTONUP,
+    WM_MOUSEACTIVATE, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
 
-use crate::apps::{self, DockItem, Pin};
+use super::slide::Slide;
+use super::start_menu;
 use crate::config::{Config, DockMode};
-use crate::icons::Icons;
-use crate::render::{Color, Gfx, TEXT_FONT};
-use crate::ui::{self, R, DIM, FAINT, FG};
-use crate::{log, popup};
+use crate::flyouts::popup::open_uri;
+use crate::log;
+use crate::system::apps::{self, DockItem, Pin};
+use crate::ui::icon_loader::{Loader, Pixels, Request, Source};
+use crate::ui::icons::Icons;
+use crate::ui::render::{Color, Frame, Gfx, TEXT_FONT};
+use crate::ui::window::{self, Menu, MA_NOACTIVATE};
+use crate::ui::{self, backdrop, panel_bg, R, DIM, FAINT, FG};
 
 const TIMER_POLL: usize = 1; // 100 ms: mouse, hover, visibility
 const TIMER_ANIM: usize = 2; // ~60 fps while sliding in or out
 const WM_ICON_READY: u32 = WM_APP + 0x31; // the icon loader finished one
 const POLL_MS: u32 = 100;
-const HIDE_DELAY_TICKS: u32 = 4; // wait 400 ms before hiding
-const MA_NOACTIVATE: isize = 3;
 
 const ICON: f32 = 30.0; // logical pixels
 const SLOT: f32 = 42.0;
@@ -80,22 +77,21 @@ struct Dock {
     /// When an icon lookup last came back empty, so it's retried later
     /// instead of never (a Store app's content attaches after its window
     /// opens, so the first lookup can miss).
-    icon_misses: HashMap<String, std::time::Instant>,
+    icon_misses: HashMap<String, Instant>,
     /// Loads icons off this thread (icon_loader.rs).
-    loader: Option<crate::icon_loader::Loader>,
+    loader: Option<Loader>,
     /// When each kind of slow step was last logged (see `note_slow`).
-    slow_logged: HashMap<&'static str, std::time::Instant>,
+    slow_logged: HashMap<&'static str, Instant>,
     /// Icons asked for and not back yet.
-    icons_pending: std::collections::HashSet<String>,
+    icons_pending: HashSet<String>,
     /// Loaded icons' pixels, kept so bitmaps can be remade cheaply when the
     /// render target is recreated.
-    icon_pixels: HashMap<String, crate::icon_loader::Pixels>,
+    icon_pixels: HashMap<String, Pixels>,
     bitmap_generation: u64,
     pins: Vec<Pin>,
     items: Vec<DockItem>,
     signature: String,
     mode: DockMode,
-    forced: bool,
     opacity: f32,
     accent: Color,
     dpi: u32,
@@ -104,9 +100,8 @@ struct Dock {
     height: i32,
     base_x: i32,
     base_y: i32,
-    offset: f32,
-    target_hidden: bool,
-    hide_ticks: u32,
+    /// Slides down below the screen edge when hidden.
+    slide: Slide,
     covered: bool,
     ticks: u64,
     hovered: Option<usize>,
@@ -116,7 +111,6 @@ struct Dock {
     start_slot: Option<R>,
     start_hovered: bool,
     slots: Vec<R>,
-    animating: bool,
     /// Running (unpinned) apps in the order they first appeared, so icons
     /// don't swap places when you switch between windows.
     running_order: Vec<String>,
@@ -125,7 +119,7 @@ struct Dock {
 /// Remove the dock right away when betterUI quits, instead of leaving it on
 /// screen while the taskbar restore settles (about 3 s).
 pub fn destroy() {
-    crate::start_menu::uninstall();
+    start_menu::uninstall();
     // Taken out first: DestroyWindow sends it messages, which must not find it borrowed.
     if let Some(dock) = DOCK.with(|d| d.borrow_mut().take()) {
         unsafe {
@@ -134,128 +128,93 @@ pub fn destroy() {
     }
 }
 
-/// Create the dock (if enabled in settings, or `forced` for the CI test).
-pub fn create(forced: bool) {
+/// Create the dock, if it's enabled in the settings.
+pub fn create() {
     let config = Config::load();
-    if !config.dock_enabled && !forced {
+    if !config.dock_enabled {
         return;
     }
-    if let Err(e) = create_inner(&config, forced) {
+    if let Err(e) = create_inner(&config) {
         log::write(&format!("dock could not be created: {e:?}"));
     }
 }
 
-fn create_inner(config: &Config, forced: bool) -> Result<()> {
-    unsafe {
-        let hinstance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None)?.into();
-        let class = w!("betterUI.Dock");
-        let wc = WNDCLASSW {
-            lpfnWndProc: Some(wndproc),
-            hInstance: hinstance,
-            lpszClassName: class,
-            hCursor: LoadCursorW(None, IDC_ARROW)?,
-            ..Default::default()
-        };
-        RegisterClassW(&wc);
-        let hwnd = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
-            class,
-            w!("betterUI dock"),
-            WS_POPUP,
-            0,
-            0,
-            100,
-            60,
-            None,
-            None,
-            hinstance,
-            None,
-        )?;
-        let margins = windows::Win32::UI::Controls::MARGINS {
-            cxLeftWidth: -1,
-            cxRightWidth: -1,
-            cyTopHeight: -1,
-            cyBottomHeight: -1,
-        };
-        let _ = windows::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea(hwnd, &margins);
-        popup::round_corners(hwnd);
-        crate::backdrop::set_blur(hwnd, config.bar_blur);
+fn create_inner(config: &Config) -> Result<()> {
+    let class = w!("betterUI.Dock");
+    window::register_class(class, Some(wndproc))?;
+    let hwnd = window::create(class, w!("betterUI dock"), WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, 0, 0, 100, 60)?;
+    window::style(hwnd, DWMWCP_ROUND);
+    backdrop::set_blur(hwnd, config.bar_blur);
 
-        let gfx = Gfx::new()?;
-        let letter_font = gfx.text_format(TEXT_FONT, 18.0, 600)?;
-        let mut dock = Dock {
-            hwnd,
-            gfx,
-            letter_font,
-            icons: Icons::new().map_err(|e| log::write(&format!("icons unavailable: {e:?}"))).ok(),
-            bitmaps: HashMap::new(),
-            icon_misses: HashMap::new(),
-            loader: None,
-            slow_logged: HashMap::new(),
-            icons_pending: std::collections::HashSet::new(),
-            icon_pixels: HashMap::new(),
-            bitmap_generation: 0,
-            pins: apps::load_pins(),
-            items: Vec::new(),
-            signature: String::new(),
-            mode: if forced { DockMode::Always } else { config.dock_mode },
-            forced,
-            opacity: config.bar_opacity.max(40) as f32 / 100.0,
-            accent: ui::accent(),
-            dpi: 0,
-            monitor: RECT::default(),
-            width: 0,
-            height: 0,
-            base_x: 0,
-            base_y: 0,
-            offset: 0.0,
-            target_hidden: false,
-            hide_ticks: 0,
-            covered: false,
-            ticks: 0,
-            hovered: None,
-            start_button: config.dock_start,
-            start_slot: None,
-            start_hovered: false,
-            slots: Vec::new(),
-            animating: false,
-            running_order: Vec::new(),
-        };
-        dock.refresh_items();
-        dock.reposition();
-        // Start hidden in auto-hide mode, shown otherwise.
-        if dock.mode == DockMode::AutoHide {
-            dock.offset = dock.hidden_offset();
-            dock.target_hidden = true;
-        } else {
+    let gfx = Gfx::new()?;
+    let letter_font = gfx.text_format(TEXT_FONT, 18.0, 600)?;
+    let mut dock = Dock {
+        hwnd,
+        gfx,
+        letter_font,
+        icons: Icons::new().map_err(|e| log::write(&format!("icons unavailable: {e:?}"))).ok(),
+        bitmaps: HashMap::new(),
+        icon_misses: HashMap::new(),
+        loader: None,
+        slow_logged: HashMap::new(),
+        icons_pending: HashSet::new(),
+        icon_pixels: HashMap::new(),
+        bitmap_generation: 0,
+        pins: apps::load_pins(),
+        items: Vec::new(),
+        signature: String::new(),
+        mode: config.dock_mode,
+        opacity: config.bar_opacity.max(40) as f32 / 100.0,
+        accent: ui::accent(),
+        dpi: 0,
+        monitor: RECT::default(),
+        width: 0,
+        height: 0,
+        base_x: 0,
+        base_y: 0,
+        slide: Slide::new(hwnd, TIMER_ANIM),
+        covered: false,
+        ticks: 0,
+        hovered: None,
+        start_button: config.dock_start,
+        start_slot: None,
+        start_hovered: false,
+        slots: Vec::new(),
+        running_order: Vec::new(),
+    };
+    dock.refresh_items();
+    dock.reposition();
+    // Start hidden in auto-hide mode, shown otherwise.
+    if dock.mode == DockMode::AutoHide {
+        dock.slide.jump(true, dock.hidden_offset());
+    } else {
+        unsafe {
             let _ = ShowWindow(hwnd, SW_SHOWNA);
         }
-        dock.apply_offset();
-        DOCK.with(|d| *d.borrow_mut() = Some(dock));
-        crate::start_menu::install();
+    }
+    dock.apply_offset();
+    DOCK.with(|d| *d.borrow_mut() = Some(dock));
+    start_menu::install();
+    unsafe {
         SetTimer(hwnd, TIMER_POLL, POLL_MS, None);
     }
     Ok(())
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    match msg {
-        WM_ERASEBKGND => return LRESULT(1),
-        WM_MOUSEACTIVATE => return LRESULT(MA_NOACTIVATE),
-        _ => {}
+    if msg == WM_MOUSEACTIVATE {
+        return LRESULT(MA_NOACTIVATE);
     }
-    let handled = DOCK.with(|cell| match cell.try_borrow_mut() {
-        Ok(mut guard) => guard.as_mut().and_then(|d| d.handle(msg, wp, lp)),
-        Err(_) => None,
-    });
-    handled.unwrap_or_else(|| DefWindowProcW(hwnd, msg, wp, lp))
+    window::dispatch(&DOCK, hwnd, msg, wp, lp, Dock::handle)
 }
 
-fn point_from(lp: LPARAM) -> (f32, f32) {
-    (
-        (lp.0 & 0xFFFF) as u16 as i16 as f32,
-        ((lp.0 >> 16) & 0xFFFF) as u16 as i16 as f32,
-    )
+/// The process id that owns a window.
+fn window_pid(hwnd: HWND) -> u32 {
+    let mut pid = 0u32;
+    unsafe {
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    }
+    pid
 }
 
 impl Dock {
@@ -276,20 +235,20 @@ impl Dock {
         }
     }
 
+    fn on_start_button(&self, x: f32, y: f32) -> bool {
+        self.start_slot.map(|r| r.contains(x, y)).unwrap_or(false)
+    }
+
     fn handle(&mut self, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
         match msg {
             WM_PAINT => {
-                unsafe {
-                    let mut ps = PAINTSTRUCT::default();
-                    BeginPaint(self.hwnd, &mut ps);
-                    let started = std::time::Instant::now();
+                let hwnd = self.hwnd;
+                window::paint(hwnd, "dock", || {
+                    let started = Instant::now();
                     let painted = self.paint();
                     self.note_slow("paint", started);
-                    if let Err(e) = painted {
-                        log::write(&format!("dock paint failed: {e:?}"));
-                    }
-                    let _ = EndPaint(self.hwnd, &ps);
-                }
+                    painted
+                });
                 Some(LRESULT(0))
             }
             WM_TIMER => {
@@ -309,8 +268,8 @@ impl Dock {
                 Some(LRESULT(0))
             }
             WM_LBUTTONUP => {
-                let (x, y) = point_from(lp);
-                if self.start_slot.map(|r| r.contains(x, y)).unwrap_or(false) {
+                let (x, y) = window::client_point(lp);
+                if self.on_start_button(x, y) {
                     open_start(false);
                 } else if let Some(i) = self.slot_at(x, y) {
                     self.click(i);
@@ -318,23 +277,21 @@ impl Dock {
                 Some(LRESULT(0))
             }
             WM_MBUTTONUP => {
-                let (x, y) = point_from(lp);
-                if let Some(i) = self.slot_at(x, y) {
-                    if let Some(path) = self.items[i].launch.clone() {
-                        popup::open_uri(&path);
-                    }
+                let (x, y) = window::client_point(lp);
+                if let Some(path) = self.slot_at(x, y).and_then(|i| self.items[i].launch.clone()) {
+                    open_uri(&path);
                 }
                 Some(LRESULT(0))
             }
             WM_RBUTTONUP => {
-                let (x, y) = point_from(lp);
-                if self.start_slot.map(|r| r.contains(x, y)).unwrap_or(false) {
+                let (x, y) = window::client_point(lp);
+                if self.on_start_button(x, y) {
                     // Like the Windows Start button: the Win+X menu.
                     open_start(true);
-                    return Some(LRESULT(0));
+                } else {
+                    let i = self.slot_at(x, y);
+                    self.context_menu(i);
                 }
-                let i = self.slot_at(x, y);
-                self.context_menu(i);
                 Some(LRESULT(0))
             }
             _ => None,
@@ -349,12 +306,12 @@ impl Dock {
 
     /// Log a dock step that blocked the dock's thread for 30 ms or more (at
     /// most once per 10 s per step), to find what makes the dock feel slow.
-    fn note_slow(&mut self, step: &'static str, started: std::time::Instant) {
+    fn note_slow(&mut self, step: &'static str, started: Instant) {
         let ms = started.elapsed().as_millis();
         if ms < 30 {
             return;
         }
-        let now = std::time::Instant::now();
+        let now = Instant::now();
         if self.slow_logged.get(step).map(|t| now.duration_since(*t).as_secs() < 10).unwrap_or(false) {
             return;
         }
@@ -372,11 +329,7 @@ impl Dock {
                 continue;
             }
             let Some(&hwnd) = item.windows.first() else { continue };
-            let mut pid = 0u32;
-            unsafe {
-                GetWindowThreadProcessId(hwnd, Some(&mut pid));
-            }
-            if let Some(id) = apps::process_app_id(pid) {
+            if let Some(id) = apps::process_app_id(window_pid(hwnd)) {
                 log::write(&format!("dock pin moved to the Store app id {id}"));
                 *pin = apps::pin_for_app_id(&id);
                 changed = true;
@@ -388,10 +341,10 @@ impl Dock {
     }
 
     fn refresh_items(&mut self) {
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         let windows = apps::app_windows();
         self.note_slow("listing windows", started);
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         let items = apps::dock_items(&self.pins, &windows);
         self.upgrade_store_pins(&items);
         let items = self.stable_order(items);
@@ -447,21 +400,16 @@ impl Dock {
 
     /// Centre the dock at the bottom of the primary monitor.
     fn reposition(&mut self) {
-        unsafe {
-            let hmon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
-            let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-            let _ = GetMonitorInfoW(hmon, &mut mi);
-            let (mut dx, mut dy) = (96u32, 96u32);
-            let _ = GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
-            if dx != self.dpi && dx > 0 {
-                self.dpi = dx;
-                if let Ok(f) = self.gfx.text_format(TEXT_FONT, 13.0 * self.scale(), 600) {
-                    self.letter_font = f;
-                }
-                self.bitmaps.clear(); // icon size changed
+        let hmon = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
+        let m = window::monitor_info(hmon).unwrap_or_default();
+        if m.dpi != self.dpi && m.dpi > 0 {
+            self.dpi = m.dpi;
+            if let Ok(f) = self.gfx.text_format(TEXT_FONT, 13.0 * self.scale(), 600) {
+                self.letter_font = f;
             }
-            self.monitor = mi.rcMonitor;
+            self.bitmaps.clear(); // icon size changed
         }
+        self.monitor = m.rect;
         let s = self.scale();
         self.width = self.layout_width().round() as i32;
         self.height = ((SLOT + 2.0 * PAD) * s).round() as i32;
@@ -470,7 +418,7 @@ impl Dock {
         self.base_y = self.monitor.bottom - self.height - (MARGIN * s).round() as i32;
         // SearchHost draws Start's visible panel 14 px below its window's
         // bottom edge (measured on the real PC at 100%), so leave room for that.
-        crate::start_menu::set_target(
+        start_menu::set_target(
             self.base_y - ((MARGIN + START_OVERHANG) * s).round() as i32,
             self.monitor.left,
             self.monitor.right,
@@ -486,7 +434,7 @@ impl Dock {
                 self.hwnd,
                 HWND_TOPMOST,
                 self.base_x,
-                self.base_y + self.offset.round() as i32,
+                self.base_y + self.slide.offset.round() as i32,
                 self.width,
                 self.height,
                 SWP_NOACTIVATE,
@@ -495,20 +443,18 @@ impl Dock {
     }
 
     fn invalidate(&self) {
-        unsafe {
-            let _ = InvalidateRect(self.hwnd, None, false);
-        }
+        window::invalidate(self.hwnd);
     }
 
     // ---- Show / hide ------------------------------------------------------
 
     fn poll(&mut self) {
         self.ticks += 1;
-        if self.ticks % 10 == 0 {
+        if self.ticks.is_multiple_of(10) {
             self.refresh_items();
         }
-        if self.mode == DockMode::Smart && self.ticks % 3 == 0 {
-            let started = std::time::Instant::now();
+        if self.mode == DockMode::Smart && self.ticks.is_multiple_of(3) {
+            let started = Instant::now();
             let dock = self.shown_rect();
             self.covered = apps::any_window_overlaps(&dock);
             self.note_slow("checking for covering windows", started);
@@ -519,7 +465,7 @@ impl Dock {
             let _ = GetCursorPos(&mut cursor);
         }
         let dock = self.shown_rect();
-        let visible = self.offset < self.hidden_offset() - 1.0;
+        let visible = self.slide.shown(self.hidden_offset());
         let in_x = cursor.x >= self.monitor.left && cursor.x < self.monitor.right;
         let at_edge = in_x
             && cursor.y >= self.monitor.bottom - 2
@@ -532,9 +478,7 @@ impl Dock {
             && cursor.y >= dock.top - 8
             && cursor.y <= self.monitor.bottom;
 
-        let want_visible = if self.forced {
-            true
-        } else if self.fullscreen_in_front() {
+        let want_visible = if apps::fullscreen_on(&self.monitor) {
             false
         } else {
             match self.mode {
@@ -543,21 +487,13 @@ impl Dock {
                 DockMode::Smart => !self.covered || at_edge || over,
             }
         };
-        if want_visible {
-            self.hide_ticks = 0;
-            self.set_target_hidden(false);
-        } else {
-            self.hide_ticks += 1;
-            if self.hide_ticks >= HIDE_DELAY_TICKS {
-                self.set_target_hidden(true);
-            }
-        }
+        self.slide.want_visible(want_visible);
 
         // Hover highlight
         let lx = (cursor.x - self.base_x) as f32;
-        let ly = (cursor.y - (self.base_y + self.offset.round() as i32)) as f32;
+        let ly = (cursor.y - (self.base_y + self.slide.offset.round() as i32)) as f32;
         let hovered = if visible { self.slot_at(lx, ly) } else { None };
-        let start_hovered = visible && self.start_slot.map(|r| r.contains(lx, ly)).unwrap_or(false);
+        let start_hovered = visible && self.on_start_button(lx, ly);
         if hovered != self.hovered || start_hovered != self.start_hovered {
             self.hovered = hovered;
             self.start_hovered = start_hovered;
@@ -565,63 +501,24 @@ impl Dock {
         }
     }
 
-    fn fullscreen_in_front(&self) -> bool {
-        apps::fullscreen_on(&self.monitor)
-    }
-
-    fn set_target_hidden(&mut self, hidden: bool) {
-        if hidden == self.target_hidden {
-            return;
-        }
-        self.target_hidden = hidden;
-        if !hidden {
-            unsafe {
-                let _ = ShowWindow(self.hwnd, SW_SHOWNA);
-            }
-        }
-        if !self.animating {
-            self.animating = true;
-            unsafe {
-                SetTimer(self.hwnd, TIMER_ANIM, 15, None);
-            }
-        }
-    }
-
     fn animate(&mut self) {
-        let started = std::time::Instant::now();
-        self.animate_step();
-        self.note_slow("slide animation step", started);
-    }
-
-    fn animate_step(&mut self) {
-        let target = if self.target_hidden { self.hidden_offset() } else { 0.0 };
-        let diff = target - self.offset;
-        if diff.abs() < 1.0 {
-            self.offset = target;
-            self.animating = false;
-            unsafe {
-                let _ = KillTimer(self.hwnd, TIMER_ANIM);
-                if self.target_hidden {
-                    let _ = ShowWindow(self.hwnd, SW_HIDE);
-                }
-            }
-        } else {
-            self.offset += diff * 0.35;
-        }
+        let started = Instant::now();
+        self.slide.step(self.hidden_offset());
         self.apply_offset();
+        self.note_slow("slide animation step", started);
     }
 
     // ---- Actions ------------------------------------------------------------
 
     fn click(&mut self, i: usize) {
         let item = self.items[i].clone();
-        unsafe {
-            if item.windows.is_empty() {
-                if let Some(path) = &item.launch {
-                    popup::open_uri(path);
-                }
-                return;
+        if item.windows.is_empty() {
+            if let Some(path) = &item.launch {
+                open_uri(path);
             }
+            return;
+        }
+        unsafe {
             let fg = GetForegroundWindow();
             if item.windows.contains(&fg) {
                 if item.windows.len() > 1 {
@@ -638,102 +535,90 @@ impl Dock {
     }
 
     fn context_menu(&mut self, index: Option<usize>) {
-        unsafe {
-            let Ok(menu) = CreatePopupMenu() else { return };
-            let item = index.map(|i| self.items[i].clone());
-            if let Some(item) = &item {
-                if item.launch.is_some() {
-                    let _ = AppendMenuW(menu, MF_STRING, MENU_NEW, w!("New window"));
-                }
-                if item.pinned {
-                    let _ = AppendMenuW(menu, MF_STRING, MENU_PIN, w!("Unpin from dock"));
-                } else if item.launch.is_some() {
-                    let _ = AppendMenuW(menu, MF_STRING, MENU_PIN, w!("Pin to dock"));
-                }
-                if !item.windows.is_empty() {
-                    let label = if item.windows.len() > 1 { "Close all windows" } else { "Close window" };
-                    let _ = AppendMenuW(menu, MF_STRING, MENU_CLOSE, &HSTRING::from(label));
-                }
-                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());
+        let Some(menu) = Menu::new() else { return };
+        let item = index.map(|i| self.items[i].clone());
+        if let Some(item) = &item {
+            if item.launch.is_some() {
+                menu.item(MENU_NEW, "New window");
             }
-            let check = |m: DockMode| if self.mode == m { MF_CHECKED } else { MF_UNCHECKED };
-            let _ = AppendMenuW(menu, MF_STRING | check(DockMode::Smart), MENU_MODE_SMART, w!("Hide dock when a window covers it"));
-            let _ = AppendMenuW(menu, MF_STRING | check(DockMode::AutoHide), MENU_MODE_AUTOHIDE, w!("Auto-hide dock"));
-            let _ = AppendMenuW(menu, MF_STRING | check(DockMode::Always), MENU_MODE_ALWAYS, w!("Always show dock"));
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());
-            let start_check = if self.start_button { MF_CHECKED } else { MF_UNCHECKED };
-            let _ = AppendMenuW(menu, MF_STRING | start_check, MENU_START_BUTTON, w!("Show Start button"));
-
-            let mut pt = POINT::default();
-            let _ = GetCursorPos(&mut pt);
-            let _ = SetForegroundWindow(self.hwnd);
-            let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY, pt.x, pt.y, 0, self.hwnd, None);
-            let _ = DestroyMenu(menu);
-
-            match cmd.0 as usize {
-                MENU_NEW => {
-                    if let Some(path) = item.as_ref().and_then(|i| i.launch.clone()) {
-                        popup::open_uri(&path);
-                    }
-                }
-                MENU_PIN => {
-                    if let Some(item) = &item {
-                        if item.pinned {
-                            if let Some(path) = &item.launch {
-                                self.pins.retain(|p| &p.path != path);
-                            }
-                        } else if let Some(path) = &item.launch {
-                            // Pin the exe that starts the app, not a helper
-                            // that only draws its windows (Steam).
-                            let launcher = apps::launcher_for(&item.windows);
-                            let exe = launcher.as_deref().unwrap_or(path);
-                            // Store apps by their AppUserModelID: their exe
-                            // path changes with every update.
-                            let app_id = apps::package_family(exe).and_then(|_| {
-                                let mut pid = 0u32;
-                                GetWindowThreadProcessId(*item.windows.first()?, Some(&mut pid));
-                                apps::process_app_id(pid)
-                            });
-                            self.pins.push(match app_id {
-                                Some(id) => apps::pin_for_app_id(&id),
-                                None => apps::pin_for_exe(exe),
-                            });
-                        }
-                        apps::save_pins(&self.pins);
-                        self.refresh_items();
-                        self.reposition();
-                    }
-                }
-                MENU_CLOSE => {
-                    if let Some(item) = &item {
-                        for h in &item.windows {
-                            let _ = PostMessageW(*h, WM_CLOSE, WPARAM(0), LPARAM(0));
-                        }
-                    }
-                }
-                MENU_START_BUTTON => {
-                    self.start_button = !self.start_button;
-                    let on = self.start_button;
-                    Config::update(|c| c.dock_start = on);
-                    if !on {
-                        self.start_slot = None;
-                    }
-                    self.reposition();
-                    self.invalidate();
-                }
-                id @ (MENU_MODE_SMART | MENU_MODE_AUTOHIDE | MENU_MODE_ALWAYS) => {
-                    let mode = match id {
-                        MENU_MODE_AUTOHIDE => DockMode::AutoHide,
-                        MENU_MODE_ALWAYS => DockMode::Always,
-                        _ => DockMode::Smart,
-                    };
-                    self.mode = mode;
-                    self.forced = false;
-                    Config::update(|c| c.dock_mode = mode);
-                }
-                _ => {}
+            if item.pinned {
+                menu.item(MENU_PIN, "Unpin from dock");
+            } else if item.launch.is_some() {
+                menu.item(MENU_PIN, "Pin to dock");
             }
+            if !item.windows.is_empty() {
+                menu.item(MENU_CLOSE, if item.windows.len() > 1 { "Close all windows" } else { "Close window" });
+            }
+            menu.separator();
         }
+        menu.check(MENU_MODE_SMART, "Hide dock when a window covers it", self.mode == DockMode::Smart);
+        menu.check(MENU_MODE_AUTOHIDE, "Auto-hide dock", self.mode == DockMode::AutoHide);
+        menu.check(MENU_MODE_ALWAYS, "Always show dock", self.mode == DockMode::Always);
+        menu.separator();
+        menu.check(MENU_START_BUTTON, "Show Start button", self.start_button);
+
+        match menu.track(self.hwnd) {
+            MENU_NEW => {
+                if let Some(path) = item.as_ref().and_then(|i| i.launch.clone()) {
+                    open_uri(&path);
+                }
+            }
+            MENU_PIN => {
+                if let Some(item) = &item {
+                    self.toggle_pin(item);
+                }
+            }
+            MENU_CLOSE => {
+                for h in item.iter().flat_map(|i| &i.windows) {
+                    unsafe {
+                        let _ = PostMessageW(*h, WM_CLOSE, WPARAM(0), LPARAM(0));
+                    }
+                }
+            }
+            MENU_START_BUTTON => {
+                self.start_button = !self.start_button;
+                let on = self.start_button;
+                Config::update(|c| c.dock_start = on);
+                if !on {
+                    self.start_slot = None;
+                }
+                self.reposition();
+            }
+            id @ (MENU_MODE_SMART | MENU_MODE_AUTOHIDE | MENU_MODE_ALWAYS) => {
+                let mode = match id {
+                    MENU_MODE_AUTOHIDE => DockMode::AutoHide,
+                    MENU_MODE_ALWAYS => DockMode::Always,
+                    _ => DockMode::Smart,
+                };
+                self.mode = mode;
+                Config::update(|c| c.dock_mode = mode);
+            }
+            _ => {}
+        }
+    }
+
+    fn toggle_pin(&mut self, item: &DockItem) {
+        let Some(path) = &item.launch else { return };
+        if item.pinned {
+            self.pins.retain(|p| &p.path != path);
+        } else {
+            // Pin the exe that starts the app, not a helper that only draws
+            // its windows (Steam).
+            let launcher = apps::launcher_for(&item.windows);
+            let exe = launcher.as_deref().unwrap_or(path);
+            // Store apps by their AppUserModelID: their exe path changes
+            // with every update.
+            let app_id = apps::package_family(exe)
+                .and_then(|_| item.windows.first())
+                .and_then(|h| apps::process_app_id(window_pid(*h)));
+            self.pins.push(match app_id {
+                Some(id) => apps::pin_for_app_id(&id),
+                None => apps::pin_for_exe(exe),
+            });
+        }
+        apps::save_pins(&self.pins);
+        self.refresh_items();
+        self.reposition();
     }
 
     // ---- Drawing ------------------------------------------------------------
@@ -748,7 +633,7 @@ impl Dock {
             self.bitmaps.clear();
             self.bitmap_generation = self.gfx.generation;
         }
-        frame.round_rect(0.0, 0.0, self.width as f32, self.height as f32, 0.0, Color(0.10, 0.10, 0.12, self.opacity));
+        frame.round_rect(0.0, 0.0, self.width as f32, self.height as f32, 0.0, panel_bg(self.opacity));
 
         let fg = unsafe { GetForegroundWindow() };
         let icon_px = (ICON * s).round();
@@ -816,8 +701,7 @@ impl Dock {
         result
     }
 
-    fn icon_for(&mut self, item: &DockItem, size: i32, frame: &crate::render::Frame) -> IconState {
-        use crate::icon_loader::{Loader, Request, Source};
+    fn icon_for(&mut self, item: &DockItem, size: i32, frame: &Frame) -> IconState {
         let (base, source) = match (&item.launch, item.windows.first()) {
             (Some(path), _) => (path.to_lowercase(), Source::Path(path.clone())),
             (None, Some(h)) => (format!("hwnd:{}", h.0 as isize), Source::Window(h.0 as isize)),
@@ -828,7 +712,7 @@ impl Dock {
             return IconState::Ready(bmp.clone());
         }
         if let Some(pixels) = self.icon_pixels.get(&key) {
-            let bmp = self.icons.as_ref().and_then(|i| i.from_pixels(pixels)).and_then(|src| frame.bitmap(&src).ok());
+            let bmp = self.icons.as_ref().and_then(|i| i.bitmap_from_pixels(pixels)).and_then(|src| frame.bitmap(&src).ok());
             if let Some(bmp) = bmp {
                 self.bitmaps.insert(key, Some(bmp.clone()));
                 return IconState::Ready(bmp);
@@ -848,13 +732,7 @@ impl Dock {
         // Packaged desktop apps (Photos) often have no icon in their exe, so the
         // shell gives a generic one; their Apps-folder entry has the real one.
         let packaged = match (&source, item.windows.first()) {
-            (Source::Path(p), Some(h)) if p.to_lowercase().contains("\\windowsapps\\") => {
-                let mut pid = 0u32;
-                unsafe {
-                    GetWindowThreadProcessId(*h, Some(&mut pid));
-                }
-                apps::process_app_id(pid)
-            }
+            (Source::Path(p), Some(h)) if p.to_lowercase().contains("\\windowsapps\\") => apps::process_app_id(window_pid(*h)),
             _ => None,
         };
         let source = packaged.map(|id| Source::Path(format!("shell:AppsFolder\\{id}"))).unwrap_or(source);
@@ -883,13 +761,13 @@ impl Dock {
                     self.icon_pixels.insert(loaded.key, pixels);
                 }
                 None => {
-                    self.icon_misses.insert(loaded.key, std::time::Instant::now());
+                    self.icon_misses.insert(loaded.key, Instant::now());
                 }
             }
         }
         // Forget icons of windows that have closed.
         if self.icon_pixels.len() > 64 {
-            let live: std::collections::HashSet<String> = self
+            let live: HashSet<String> = self
                 .items
                 .iter()
                 .flat_map(|i| i.windows.iter().map(|h| format!("hwnd:{}", h.0 as isize)).chain(i.launch.iter().map(|p| p.to_lowercase())))
@@ -903,7 +781,7 @@ impl Dock {
 
 /// The Start button's icon: the Windows 11 logo, four square panes in a
 /// 2 x 2 grid, in the blue the Windows taskbar uses.
-fn draw_start_icon(frame: &crate::render::Frame, x: f32, y: f32, size: f32) {
+fn draw_start_icon(frame: &Frame, x: f32, y: f32, size: f32) {
     // App icon artwork fills ~90% of its square (measured on the real PC); a
     // solid logo reads larger, so it stays a touch under that.
     let grid = (size * 0.88).round();

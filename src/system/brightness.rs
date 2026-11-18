@@ -16,8 +16,6 @@ use windows::Win32::Devices::Display::{
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Gdi::{MonitorFromRect, MONITOR_DEFAULTTOPRIMARY};
 
-static DEMO_VALUE: Mutex<f32> = Mutex::new(0.7);
-
 /// The physical monitors behind the display at `area` (screen coordinates).
 fn with_monitors<T>(area: RECT, f: impl FnOnce(&[PHYSICAL_MONITOR]) -> T) -> Option<T> {
     unsafe {
@@ -38,9 +36,6 @@ fn with_monitors<T>(area: RECT, f: impl FnOnce(&[PHYSICAL_MONITOR]) -> T) -> Opt
 /// Current brightness 0..1 of the monitor at `area`, or None if it doesn't
 /// support DDC/CI.
 pub fn read(area: RECT) -> Option<f32> {
-    if crate::audio::demo() {
-        return DEMO_VALUE.lock().ok().map(|v| *v);
-    }
     with_monitors(area, |monitors| {
         for m in monitors {
             let (mut min, mut cur, mut max) = (0u32, 0u32, 0u32);
@@ -55,12 +50,6 @@ pub fn read(area: RECT) -> Option<f32> {
 }
 
 fn write(area: RECT, v: f32) {
-    if crate::audio::demo() {
-        if let Ok(mut d) = DEMO_VALUE.lock() {
-            *d = v;
-        }
-        return;
-    }
     with_monitors(area, |monitors| {
         for m in monitors {
             let (mut min, mut cur, mut max) = (0u32, 0u32, 0u32);

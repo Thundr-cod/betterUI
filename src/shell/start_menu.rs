@@ -15,7 +15,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     OBJID_WINDOW, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, WINEVENT_OUTOFCONTEXT,
 };
 
-use crate::{log, procinfo};
+use crate::log;
+use crate::system::procinfo;
 
 thread_local! {
     /// (bottom edge Start's window must end at, monitor left, monitor right).
@@ -91,7 +92,7 @@ unsafe extern "system" fn on_event(_: HWINEVENTHOOK, event: u32, hwnd: HWND, obj
             // The panel itself is a CoreWindow; its power menu, right-click
             // menus and tooltips are separate windows (seen on the real PC
             // being dragged down to the dock) and must be left alone.
-            if crate::apps::class_name(hwnd) != "Windows.UI.Core.CoreWindow" {
+            if crate::system::apps::class_name(hwnd) != "Windows.UI.Core.CoreWindow" {
                 return false;
             }
             let mut pid = 0u32;

@@ -14,33 +14,31 @@ use std::cell::RefCell;
 use std::sync::mpsc::{channel, Receiver, Sender};
 
 use windows::core::{w, Result};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::DirectWrite::IDWriteTextFormat;
-use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, ScreenToClient, PAINTSTRUCT};
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
-use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, VK_ESCAPE};
+use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DefWindowProcW, IsWindowVisible, KillTimer, PostMessageW, SetForegroundWindow, SetTimer,
-    SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SW_HIDE, SW_SHOW,
-    WA_INACTIVE, WM_ACTIVATE, WM_APP, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_TIMER,
+    PostMessageW, WM_ACTIVATE, WM_APP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
+    WM_TIMER,
 };
 
-use crate::audio::{Audio, Flow, Level};
-use crate::audio_flyout::WM_AUDIO_CHANGED;
-use crate::bluetooth::{self, BtDevice};
-use crate::radios::{self, RadioStates};
-use crate::render::{Color, Gfx, Text, ICON_FONT, TEXT_FONT};
-use crate::ui::{self, R, DIM, FAINT, FG};
-use crate::{brightness, log, popup};
+use super::audio::WM_AUDIO_CHANGED;
+use super::popup::{self, Popup};
+use super::widgets::{self, Item, SliderStyle};
+use crate::log;
+use crate::system::audio::{Audio, Flow, Level};
+use crate::system::bluetooth::{self, BtDevice};
+use crate::system::brightness;
+use crate::system::radios::{self, RadioStates};
+use crate::ui::render::{Color, Gfx, ICON_FONT, TEXT_FONT};
+use crate::ui::{self, window, R, DIM, FAINT, FG, ICON_BLUETOOTH, ICON_WIFI};
 
 const WM_PANEL_DATA: u32 = WM_APP + 10;
 const TIMER_REFRESH: usize = 1;
 const MAX_DEVICES: usize = 8;
 
 // Segoe Fluent Icons
-const ICON_WIFI: &str = "\u{E701}";
-const ICON_BLUETOOTH: &str = "\u{E702}";
 const ICON_SETTINGS: &str = "\u{E713}";
 const ICON_BRIGHTNESS: &str = "\u{E706}";
 const ICON_CHEVRON: &str = "\u{E76C}";
@@ -68,12 +66,6 @@ enum Hit {
     Mute,
 }
 
-enum Item {
-    Rect(R, f32, Color),
-    Circle(f32, f32, f32, Color),
-    Text(Text, f32, f32, Color),
-}
-
 /// Result of a background query.
 struct Fetched {
     /// `Panel::toggles` when the fetch started, and whether it was a toggle's.
@@ -93,11 +85,9 @@ struct Fonts {
 }
 
 struct Panel {
-    hwnd: HWND,
+    popup: Popup,
     notify: HWND,
-    gfx: Gfx,
     fonts: Fonts,
-    dpi: u32,
     kind: Kind,
     audio: Option<Audio>,
     tx: Sender<Fetched>,
@@ -118,9 +108,6 @@ struct Panel {
     monitor: RECT,
     volume: Option<Level>,
     accent: Color,
-    opacity: f32,
-    width: i32,
-    height: i32,
     hits: Vec<(R, Hit)>,
     tracks: Vec<(SliderId, f32, f32)>,
     dragging: Option<SliderId>,
@@ -131,49 +118,37 @@ thread_local! {
 }
 
 /// Open `kind` under `anchor`, or close it if it's already showing.
-pub fn toggle(kind: Kind, anchor: RECT, notify: HWND, bar_opacity: u32, force_open: bool) {
+pub fn toggle(kind: Kind, anchor: RECT, notify: HWND, bar_opacity: u32) {
     if let Err(e) = ensure_created(notify) {
         log::write(&format!("panel could not be created: {e:?}"));
         return;
     }
-    PANEL.with(|cell| {
-        let Ok(mut guard) = cell.try_borrow_mut() else { return };
-        let Some(p) = guard.as_mut() else { return };
-        let visible = unsafe { IsWindowVisible(p.hwnd).as_bool() };
-        if visible && p.kind == kind && !force_open {
+    window::with_state(&PANEL, |p| {
+        if p.popup.visible() && p.kind == kind {
             p.hide();
         } else {
             p.kind = kind;
-            p.opacity = (bar_opacity.max(70) as f32) / 100.0;
+            p.popup.set_opacity(bar_opacity);
             p.show(anchor);
         }
     });
 }
 
 pub fn hide() {
-    PANEL.with(|cell| {
-        if let Ok(mut guard) = cell.try_borrow_mut() {
-            if let Some(p) = guard.as_mut() {
-                p.hide();
-            }
-        }
-    });
+    window::with_state(&PANEL, |p| p.hide());
 }
 
 fn ensure_created(notify: HWND) -> Result<()> {
     if PANEL.with(|c| c.borrow().is_some()) {
         return Ok(());
     }
-    let hwnd = popup::create(w!("betterUI.Panel"), w!("betterUI panel"), Some(wndproc))?;
-    let gfx = Gfx::new()?;
-    let fonts = make_fonts(&gfx, 1.0)?;
+    let popup = Popup::new(w!("betterUI.Panel"), w!("betterUI panel"), Some(wndproc), Some((TIMER_REFRESH, 2000)))?;
+    let fonts = make_fonts(&popup.gfx, 1.0)?;
     let (tx, rx) = channel();
     let panel = Panel {
-        hwnd,
+        popup,
         notify,
-        gfx,
         fonts,
-        dpi: 96,
         kind: Kind::ControlCenter,
         audio: Audio::new().ok(),
         tx,
@@ -189,9 +164,6 @@ fn ensure_created(notify: HWND) -> Result<()> {
         monitor: RECT::default(),
         volume: None,
         accent: ui::accent(),
-        opacity: 0.85,
-        width: 0,
-        height: 0,
         hits: Vec::new(),
         tracks: Vec::new(),
         dragging: None,
@@ -211,21 +183,7 @@ fn make_fonts(gfx: &Gfx, s: f32) -> Result<Fonts> {
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    if msg == WM_ERASEBKGND {
-        return LRESULT(1);
-    }
-    let handled = PANEL.with(|cell| match cell.try_borrow_mut() {
-        Ok(mut guard) => guard.as_mut().and_then(|p| p.handle(msg, wp, lp)),
-        Err(_) => None,
-    });
-    handled.unwrap_or_else(|| DefWindowProcW(hwnd, msg, wp, lp))
-}
-
-fn point_from(lp: LPARAM) -> (i32, i32) {
-    (
-        (lp.0 & 0xFFFF) as u16 as i16 as i32,
-        ((lp.0 >> 16) & 0xFFFF) as u16 as i16 as i32,
-    )
+    window::dispatch(&PANEL, hwnd, msg, wp, lp, Panel::handle)
 }
 
 /// Run `work` on a background thread (with COM ready for the WinRT calls)
@@ -246,7 +204,7 @@ fn spawn_fetch(hwnd: HWND, tx: Sender<Fetched>, work: impl FnOnce() -> Fetched +
 
 impl Panel {
     fn scale(&self) -> f32 {
-        self.dpi as f32 / 96.0
+        self.popup.scale()
     }
 
     fn width_for(&self) -> f32 {
@@ -264,7 +222,7 @@ impl Panel {
         let want_devices = self.kind == Kind::Bluetooth;
         let monitor = self.monitor;
         let toggles = self.toggles;
-        spawn_fetch(self.hwnd, self.tx.clone(), move || Fetched {
+        spawn_fetch(self.popup.hwnd, self.tx.clone(), move || Fetched {
             toggles,
             from_toggle: false,
             radios: radios::states(),
@@ -274,10 +232,9 @@ impl Panel {
     }
 
     fn show(&mut self, anchor: RECT) {
-        let (work, dpi) = popup::monitor_of(&anchor);
-        if dpi != self.dpi {
-            self.dpi = dpi;
-            match make_fonts(&self.gfx, self.scale()) {
+        let (work, dpi_changed) = self.popup.locate(&anchor);
+        if dpi_changed {
+            match make_fonts(&self.popup.gfx, self.scale()) {
                 Ok(f) => self.fonts = f,
                 Err(e) => log::write(&format!("panel fonts failed: {e:?}")),
             }
@@ -292,25 +249,13 @@ impl Panel {
         }
         self.fetch(!self.brightness_known);
 
-        let s = self.scale();
-        self.width = (self.width_for() * s).round() as i32;
-        self.height = self.measure_height();
-        let (x, y) = popup::place(&anchor, &work, self.width, (6.0 * s).round() as i32);
-        unsafe {
-            let _ = SetWindowPos(self.hwnd, HWND_TOPMOST, x, y, self.width, self.height, SWP_NOACTIVATE);
-            self.gfx.resize(self.width as u32, self.height as u32);
-            let _ = ShowWindow(self.hwnd, SW_SHOW);
-            let _ = SetForegroundWindow(self.hwnd);
-            SetTimer(self.hwnd, TIMER_REFRESH, 2000, None);
-        }
-        self.invalidate();
+        let w = (self.width_for() * self.scale()).round() as i32;
+        let h = self.measure_height();
+        self.popup.show(&anchor, &work, w, h);
     }
 
     fn hide(&mut self) {
-        unsafe {
-            let _ = KillTimer(self.hwnd, TIMER_REFRESH);
-            let _ = ShowWindow(self.hwnd, SW_HIDE);
-        }
+        self.popup.hide();
         if self.dragging.take().is_some() {
             unsafe {
                 let _ = ReleaseCapture();
@@ -320,33 +265,19 @@ impl Panel {
 
     fn fit_height(&mut self) {
         let h = self.measure_height();
-        if h != self.height {
-            self.height = h;
-            unsafe {
-                let _ = SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, self.width, self.height, SWP_NOACTIVATE | SWP_NOMOVE);
-            }
-            self.gfx.resize(self.width as u32, self.height as u32);
-        }
-    }
-
-    fn invalidate(&self) {
-        unsafe {
-            let _ = InvalidateRect(self.hwnd, None, false);
-        }
+        self.popup.resize(self.popup.width, h);
     }
 
     fn handle(&mut self, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
         match msg {
             WM_PAINT => {
-                unsafe {
-                    let mut ps = PAINTSTRUCT::default();
-                    BeginPaint(self.hwnd, &mut ps);
-                    if let Err(e) = self.paint() {
-                        log::write(&format!("panel paint failed: {e:?}"));
-                    }
-                    let _ = EndPaint(self.hwnd, &ps);
-                }
+                let hwnd = self.popup.hwnd;
+                window::paint(hwnd, "panel", || self.paint());
                 Some(LRESULT(0))
+            }
+            m if popup::wants_close(m, wp) => {
+                self.hide();
+                if m == WM_ACTIVATE { None } else { Some(LRESULT(0)) }
             }
             WM_PANEL_DATA => {
                 while let Ok(f) = self.rx.try_recv() {
@@ -369,7 +300,7 @@ impl Panel {
                 }
                 if self.dragging.is_none() {
                     self.fit_height();
-                    self.invalidate();
+                    self.popup.invalidate();
                 }
                 Some(LRESULT(0))
             }
@@ -377,31 +308,18 @@ impl Panel {
                 if self.dragging.is_none() {
                     self.volume = self.audio.as_ref().and_then(|a| a.level(Flow::Output));
                     self.fetch(false);
-                    self.invalidate();
-                }
-                Some(LRESULT(0))
-            }
-            WM_ACTIVATE => {
-                if (wp.0 & 0xFFFF) as u32 == WA_INACTIVE {
-                    self.hide();
-                }
-                None
-            }
-            WM_KEYDOWN => {
-                if wp.0 as u16 == VK_ESCAPE.0 {
-                    self.hide();
+                    self.popup.invalidate();
                 }
                 Some(LRESULT(0))
             }
             WM_LBUTTONDOWN => {
-                let (x, y) = point_from(lp);
-                self.mouse_down(x as f32, y as f32);
+                let (x, y) = window::client_point(lp);
+                self.mouse_down(x, y);
                 Some(LRESULT(0))
             }
             WM_MOUSEMOVE => {
                 if let Some(id) = self.dragging {
-                    let (x, _) = point_from(lp);
-                    self.drag_to(id, x as f32);
+                    self.drag_to(id, window::client_point(lp).0);
                 }
                 Some(LRESULT(0))
             }
@@ -414,19 +332,14 @@ impl Panel {
                 Some(LRESULT(0))
             }
             WM_MOUSEWHEEL => {
-                let notches = ((wp.0 >> 16) & 0xFFFF) as u16 as i16 as f32 / 120.0;
-                let (sx, sy) = point_from(lp);
-                let mut pt = POINT { x: sx, y: sy };
-                unsafe {
-                    let _ = ScreenToClient(self.hwnd, &mut pt);
-                }
+                let (x, y) = window::wheel_point(self.popup.hwnd, lp);
                 let id = self.hits.iter().find_map(|(r, h)| match h {
-                    Hit::Slider(id) if r.contains(pt.x as f32, pt.y as f32) => Some(*id),
-                    Hit::Mute if r.contains(pt.x as f32, pt.y as f32) => Some(SliderId::Volume),
+                    Hit::Slider(id) if r.contains(x, y) => Some(*id),
+                    Hit::Mute if r.contains(x, y) => Some(SliderId::Volume),
                     _ => None,
                 });
                 if let Some(id) = id {
-                    let v = self.value_of(id) + notches * 0.02;
+                    let v = self.value_of(id) + window::wheel_notches(wp) * 0.02;
                     self.set_value(id, v);
                 }
                 Some(LRESULT(0))
@@ -439,6 +352,12 @@ impl Panel {
         match id {
             SliderId::Brightness => self.brightness.unwrap_or(0.0),
             SliderId::Volume => self.volume.map(|l| l.volume).unwrap_or(0.0),
+        }
+    }
+
+    fn audio_changed(&self) {
+        unsafe {
+            let _ = PostMessageW(self.notify, WM_AUDIO_CHANGED, WPARAM(0), LPARAM(0));
         }
     }
 
@@ -459,19 +378,15 @@ impl Panel {
                         l.muted = false;
                     }
                 }
-                unsafe {
-                    let _ = PostMessageW(self.notify, WM_AUDIO_CHANGED, WPARAM(0), LPARAM(0));
-                }
+                self.audio_changed();
             }
         }
-        self.invalidate();
+        self.popup.invalidate();
     }
 
     fn drag_to(&mut self, id: SliderId, x: f32) {
-        if let Some(&(_, tx, tw)) = self.tracks.iter().find(|(t, _, _)| *t == id) {
-            if tw > 0.0 {
-                self.set_value(id, (x - tx) / tw);
-            }
+        if let Some(v) = widgets::track_value(&self.tracks, id, x) {
+            self.set_value(id, v);
         }
     }
 
@@ -486,13 +401,13 @@ impl Panel {
             radios::Kind::Wifi => self.radios.wifi = Some(!on),
             radios::Kind::Bluetooth => self.radios.bluetooth = Some(!on),
         }
-        self.invalidate();
+        self.popup.invalidate();
         let want_devices = self.kind == Kind::Bluetooth;
         self.fetching = true;
         self.toggles += 1;
         self.toggling += 1;
         let toggles = self.toggles;
-        spawn_fetch(self.hwnd, self.tx.clone(), move || {
+        spawn_fetch(self.popup.hwnd, self.tx.clone(), move || {
             radios::set(kind, !on);
             Fetched {
                 toggles,
@@ -538,15 +453,13 @@ impl Panel {
                     l.muted = !l.muted;
                     a.set_muted(Flow::Output, l.muted);
                 }
-                unsafe {
-                    let _ = PostMessageW(self.notify, WM_AUDIO_CHANGED, WPARAM(0), LPARAM(0));
-                }
-                self.invalidate();
+                self.audio_changed();
+                self.popup.invalidate();
             }
             Hit::Slider(id) => {
                 self.dragging = Some(id);
                 unsafe {
-                    SetCapture(self.hwnd);
+                    SetCapture(self.popup.hwnd);
                 }
                 self.drag_to(id, x);
             }
@@ -601,13 +514,14 @@ impl Panel {
 
     fn layout_bluetooth(&self, items: &mut Vec<Item>, hits: &mut Vec<(R, Hit)>) -> Result<f32> {
         let s = self.scale();
+        let gfx = &self.popup.gfx;
         let w = self.width_for() * s;
         let pad = 14.0 * s;
         let inner = w - 2.0 * pad;
         let mut y = pad;
 
         // Header: title + switch
-        let title = self.gfx.text("Bluetooth", &self.fonts.bold, 28.0 * s)?;
+        let title = gfx.text("Bluetooth", &self.fonts.bold, 28.0 * s)?;
         items.push(Item::Text(title, pad, y, FG));
         if self.radios.bluetooth.is_some() {
             let sx = w - pad - 40.0 * s;
@@ -628,7 +542,7 @@ impl Panel {
             None
         };
         if let Some(m) = message {
-            let t = self.gfx.text(m, &self.fonts.text, 32.0 * s)?;
+            let t = gfx.text(m, &self.fonts.text, 32.0 * s)?;
             items.push(Item::Text(t, pad, y, DIM));
             y += 36.0 * s;
         } else {
@@ -637,12 +551,12 @@ impl Panel {
                 if dev.connected {
                     items.push(Item::Rect(row, 6.0 * s, FAINT));
                 }
-                let icon = self.gfx.text(ICON_BLUETOOTH, &self.fonts.icon, row.h)?;
+                let icon = gfx.text(ICON_BLUETOOTH, &self.fonts.icon, row.h)?;
                 items.push(Item::Text(icon, row.x + 10.0 * s, row.y, if dev.connected { self.accent } else { DIM }));
-                let status = self.gfx.text(if dev.connected { "Connected" } else { "Not connected" }, &self.fonts.small, row.h)?;
+                let status = gfx.text(if dev.connected { "Connected" } else { "Not connected" }, &self.fonts.small, row.h)?;
                 let status_x = row.x + row.w - 10.0 * s - status.width;
                 let name_x = row.x + 40.0 * s;
-                let name = self.gfx.text_fit(&dev.name, &self.fonts.text, status_x - name_x - 10.0 * s, row.h)?;
+                let name = gfx.text_fit(&dev.name, &self.fonts.text, status_x - name_x - 10.0 * s, row.h)?;
                 items.push(Item::Text(name, name_x, row.y, if dev.connected { FG } else { DIM }));
                 items.push(Item::Text(status, status_x, row.y, DIM));
                 y += 42.0 * s;
@@ -654,9 +568,9 @@ impl Panel {
         items.push(Item::Rect(R::new(pad, y, inner, 1.0 * s), 0.0, FAINT));
         y += 6.0 * s;
         let row = R::new(pad, y, inner, 34.0 * s);
-        let t = self.gfx.text("Bluetooth settings", &self.fonts.text, row.h)?;
+        let t = gfx.text("Bluetooth settings", &self.fonts.text, row.h)?;
         items.push(Item::Text(t, row.x + 10.0 * s, row.y, FG));
-        let chev = self.gfx.text(ICON_CHEVRON, &self.fonts.icon_small, row.h)?;
+        let chev = gfx.text(ICON_CHEVRON, &self.fonts.icon_small, row.h)?;
         let cx = row.x + row.w - 10.0 * s - chev.width;
         items.push(Item::Text(chev, cx, row.y, DIM));
         hits.push((row, Hit::Link("ms-settings:bluetooth")));
@@ -671,6 +585,7 @@ impl Panel {
         tracks: &mut Vec<(SliderId, f32, f32)>,
     ) -> Result<f32> {
         let s = self.scale();
+        let gfx = &self.popup.gfx;
         let w = self.width_for() * s;
         let pad = 14.0 * s;
         let inner = w - 2.0 * pad;
@@ -694,77 +609,48 @@ impl Panel {
                 (FAINT, FG, DIM)
             };
             items.push(Item::Rect(r, 8.0 * s, bg));
-            let ic = self.gfx.text(icon, &self.fonts.icon, 24.0 * s)?;
+            let ic = gfx.text(icon, &self.fonts.icon, 24.0 * s)?;
             items.push(Item::Text(ic, r.x + 12.0 * s, r.y + 10.0 * s, fg));
-            let lt = self.gfx.text_fit(label, &self.fonts.text, r.w - 20.0 * s, 18.0 * s)?;
+            let lt = gfx.text_fit(label, &self.fonts.text, r.w - 20.0 * s, 18.0 * s)?;
             items.push(Item::Text(lt, r.x + 12.0 * s, r.y + 38.0 * s, fg));
             let st = if *is_radio { self.state_text(*state) } else { "Open" };
-            let stt = self.gfx.text_fit(st, &self.fonts.small, r.w - 20.0 * s, 16.0 * s)?;
+            let stt = gfx.text_fit(st, &self.fonts.small, r.w - 20.0 * s, 16.0 * s)?;
             items.push(Item::Text(stt, r.x + 12.0 * s, r.y + 55.0 * s, sub));
             hits.push((r, *hit));
         }
         y += tile_h + 14.0 * s;
 
-        // Sliders
-        let slider = |items: &mut Vec<Item>,
-                          hits: &mut Vec<(R, Hit)>,
-                          tracks: &mut Vec<(SliderId, f32, f32)>,
-                          id: SliderId,
-                          title: &str,
-                          glyph: &str,
-                          value: f32,
-                          muted: bool,
-                          y: &mut f32|
-         -> Result<()> {
-            let t = self.gfx.text(title, &self.fonts.small, 18.0 * s)?;
+        // Sliders: a title, then [icon] [=====o-----] [ 42 ]
+        let style = SliderStyle {
+            gfx,
+            icon_font: &self.fonts.icon,
+            text_font: &self.fonts.text,
+            accent: self.accent,
+            scale: s,
+            pad,
+            width: w,
+        };
+        let mut slider = |items: &mut Vec<Item>, id: SliderId, title: &str, glyph: &str, value: f32, muted: bool, y: &mut f32| -> Result<()> {
+            let t = gfx.text(title, &self.fonts.small, 18.0 * s)?;
             items.push(Item::Text(t, pad, *y, DIM));
             *y += 20.0 * s;
-            let row_h = 32.0 * s;
-            let btn = R::new(pad, *y, row_h, row_h);
-            items.push(Item::Rect(btn, 6.0 * s, FAINT));
-            let icon = self.gfx.text(glyph, &self.fonts.icon, row_h)?;
-            let ix = btn.x + (btn.w - icon.width) / 2.0;
-            items.push(Item::Text(icon, ix, *y, if muted { DIM } else { FG }));
+            let sl = widgets::slider(&style, items, *y, glyph, value, muted)?;
             if id == SliderId::Volume {
-                hits.push((btn, Hit::Mute));
+                hits.push((sl.button, Hit::Mute));
             }
-            let pct = self.gfx.text(&format!("{}", (value * 100.0).round() as i32), &self.fonts.text, row_h)?;
-            let tx = btn.x + btn.w + 14.0 * s;
-            let tw = w - pad - 34.0 * s - 10.0 * s - tx;
-            let cy = *y + row_h / 2.0;
-            let v = value.clamp(0.0, 1.0);
-            let fill = if muted { DIM } else { self.accent };
-            items.push(Item::Rect(R::new(tx, cy - 2.0 * s, tw, 4.0 * s), 2.0 * s, Color(1.0, 1.0, 1.0, 0.18)));
-            if v > 0.0 {
-                items.push(Item::Rect(R::new(tx, cy - 2.0 * s, tw * v, 4.0 * s), 2.0 * s, fill));
-            }
-            items.push(Item::Circle(tx + tw * v, cy, 8.0 * s, Color(0.27, 0.27, 0.30, 1.0)));
-            items.push(Item::Circle(tx + tw * v, cy, 4.5 * s, fill));
-            hits.push((R::new(tx - 10.0 * s, *y, tw + 20.0 * s, row_h), Hit::Slider(id)));
-            tracks.push((id, tx, tw));
-            let px = w - pad - pct.width;
-            items.push(Item::Text(pct, px, *y, DIM));
-            *y += row_h + 12.0 * s;
+            hits.push((sl.track_hit, Hit::Slider(id)));
+            tracks.push((id, sl.track_x, sl.track_w));
+            *y += 32.0 * s + 12.0 * s;
             Ok(())
         };
 
         if let Some(b) = self.brightness {
-            slider(items, hits, tracks, SliderId::Brightness, "Brightness", ICON_BRIGHTNESS, b, false, &mut y)?;
+            slider(items, SliderId::Brightness, "Brightness", ICON_BRIGHTNESS, b, false, &mut y)?;
         }
         match self.volume {
-            Some(l) => slider(
-                items,
-                hits,
-                tracks,
-                SliderId::Volume,
-                "Volume",
-                ui::volume_glyph(l.volume, l.muted),
-                l.volume,
-                l.muted,
-                &mut y,
-            )?,
+            Some(l) => slider(items, SliderId::Volume, "Volume", ui::volume_glyph(l.volume, l.muted), l.volume, l.muted, &mut y)?,
             None => {
-                let t = self.gfx.text("No audio output device", &self.fonts.text, 28.0 * s)?;
+                let t = gfx.text("No audio output device", &self.fonts.text, 28.0 * s)?;
                 items.push(Item::Text(t, pad, y, DIM));
                 y += 34.0 * s;
             }
@@ -774,19 +660,10 @@ impl Panel {
     }
 
     fn paint(&mut self) -> Result<()> {
-        if self.width <= 0 || self.height <= 0 {
-            return Ok(());
-        }
         let (items, _) = self.layout()?;
-        let frame = self.gfx.begin(self.hwnd, self.width as u32, self.height as u32)?;
-        frame.round_rect(0.0, 0.0, self.width as f32, self.height as f32, 0.0, Color(0.10, 0.10, 0.12, self.opacity));
-        for item in &items {
-            match item {
-                Item::Rect(r, radius, c) => frame.round_rect(r.x, r.y, r.w, r.h, *radius, *c),
-                Item::Circle(x, y, radius, c) => frame.circle(*x, *y, *radius, *c),
-                Item::Text(t, x, y, c) => frame.text(t, *x, *y, *c),
-            }
-        }
-        self.gfx.end(frame)
+        let Some(frame) = self.popup.begin() else { return Ok(()) };
+        let frame = frame?;
+        widgets::draw(&frame, &items);
+        self.popup.gfx.end(frame)
     }
 }

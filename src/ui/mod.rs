@@ -1,9 +1,16 @@
-// Small shared UI helpers: rectangles, icon glyphs, theme colours.
+// Drawing and window plumbing shared by every betterUI window, plus small UI
+// helpers: rectangles, icon glyphs, theme colours.
+
+pub mod backdrop;
+pub mod icon_loader;
+pub mod icons;
+pub mod render;
+pub mod window;
 
 use windows::core::w;
 use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
 
-use crate::render::Color;
+use render::Color;
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct R {
@@ -30,6 +37,8 @@ pub const ICON_VOLUME_3: &str = "\u{E995}";
 pub const ICON_MUTE: &str = "\u{E74F}";
 pub const ICON_MIC: &str = "\u{E720}";
 pub const ICON_CHECK: &str = "\u{E73E}";
+pub const ICON_WIFI: &str = "\u{E701}";
+pub const ICON_BLUETOOTH: &str = "\u{E702}";
 
 /// Speaker icon matching a volume level (like the Windows tray icon).
 pub fn volume_glyph(volume: f32, muted: bool) -> &'static str {
@@ -50,6 +59,11 @@ pub const FG: Color = Color(1.0, 1.0, 1.0, 0.92);
 pub const DIM: Color = Color(1.0, 1.0, 1.0, 0.55);
 pub const FAINT: Color = Color(1.0, 1.0, 1.0, 0.07);
 pub const HOVER: Color = Color(1.0, 1.0, 1.0, 0.12);
+
+/// Background of the dock and the flyouts, at `opacity` (0..1).
+pub fn panel_bg(opacity: f32) -> Color {
+    Color(0.10, 0.10, 0.12, opacity)
+}
 
 /// The Windows accent colour (Settings → Personalization → Colors).
 pub fn accent() -> Color {
