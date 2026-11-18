@@ -37,7 +37,7 @@ use crate::system::apps::{self, DockItem, Pin};
 use crate::ui::icon_loader::{Loader, Pixels, Request, Source};
 use crate::ui::icons::Icons;
 use crate::ui::render::{Color, Frame, Gfx, TEXT_FONT};
-use crate::ui::window::{self, Menu, MA_NOACTIVATE};
+use crate::ui::window::{self, Menu, MA_NOACTIVATE, WM_UNMINIMIZE};
 use crate::ui::{self, backdrop, panel_bg, R, DIM, FAINT, FG};
 
 const TIMER_POLL: usize = 1; // 100 ms: mouse, hover, visibility
@@ -202,6 +202,7 @@ fn create_inner(config: &Config) -> Result<()> {
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    window::watch_minimize(hwnd, msg, wp);
     if msg == WM_MOUSEACTIVATE {
         return LRESULT(MA_NOACTIVATE);
     }
@@ -264,6 +265,11 @@ impl Dock {
                 Some(LRESULT(0))
             }
             WM_DISPLAYCHANGE | WM_DPICHANGED => {
+                self.reposition();
+                Some(LRESULT(0))
+            }
+            WM_UNMINIMIZE => {
+                window::unminimize(self.hwnd);
                 self.reposition();
                 Some(LRESULT(0))
             }

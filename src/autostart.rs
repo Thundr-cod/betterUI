@@ -7,6 +7,7 @@
 
 use std::os::windows::process::CommandExt;
 use std::process::Command;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::System::Registry::{
@@ -45,11 +46,33 @@ fn current_command() -> Option<String> {
     Some(format!("\"{}\"", exe.display()))
 }
 
+/// Whether start-with-Windows is on, as last seen or set (0 = not looked up
+/// yet, 1 = off, 2 = on). Looking it up runs schtasks.exe, which made the
+/// bar's right-click menu pause before opening.
+static ENABLED: AtomicU8 = AtomicU8::new(0);
+
+fn remember(on: bool) {
+    ENABLED.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+}
+
 pub fn is_enabled() -> bool {
-    task_command().is_some() || run_key_command().is_some()
+    match ENABLED.load(Ordering::Relaxed) {
+        1 => false,
+        2 => true,
+        _ => {
+            let on = task_command().is_some() || run_key_command().is_some();
+            remember(on);
+            on
+        }
+    }
 }
 
 pub fn set_enabled(on: bool) {
+    set_enabled_inner(on);
+    remember(on);
+}
+
+fn set_enabled_inner(on: bool) {
     if on {
         let Some(cmd) = current_command() else { return };
         if create_task(&cmd) {
@@ -66,21 +89,48 @@ pub fn set_enabled(on: bool) {
     }
 }
 
-/// If start-with-Windows is on but points at a different copy of the exe
-/// (e.g. a newer release downloaded to another folder), point it at this
-/// one. A setting from an older betterUI (Run key) moves to the task.
+/// If start-with-Windows is on but points at a different copy of the exe,
+/// point it at this one when this one is clearly the one to use (see
+/// `should_move`). A setting from an older betterUI (Run key) moves to the
+/// task.
 pub fn refresh_path() {
     let Some(current) = current_command() else { return };
     let current_exe = current.trim_matches('"').to_lowercase();
     if let Some(task) = task_command() {
-        if task.to_lowercase() != current_exe {
-            crate::log::write(&format!("start with Windows now points to {current}"));
+        remember(true);
+        if task.to_lowercase() != current_exe && should_move(&task, &current_exe) {
+            crate::log::write("start with Windows now points to this copy of betterUI");
             set_enabled(true);
         }
     } else if run_key_command().is_some() {
         crate::log::write("start with Windows: moving from the Run key to a sign-in task");
         set_enabled(true);
+    } else {
+        remember(false);
     }
+}
+
+/// Move the sign-in task from the copy at `task_exe` to this one only when
+/// the task's copy is gone, this copy is a newer version, or the task runs a
+/// development build and this copy isn't one. Otherwise just running another
+/// copy (a test build, an older download) would take the setting over.
+fn should_move(task_exe: &str, current_exe: &str) -> bool {
+    if !std::path::Path::new(task_exe).exists() {
+        return true;
+    }
+    if is_dev_build(task_exe) && !is_dev_build(current_exe) {
+        return true;
+    }
+    match crate::system::procinfo::product_version(task_exe) {
+        Some(theirs) => crate::system::procinfo::version_newer(env!("CARGO_PKG_VERSION"), &theirs),
+        None => false,
+    }
+}
+
+/// A build in cargo's output folder (`target\release`, `target\debug`).
+fn is_dev_build(exe: &str) -> bool {
+    let exe = exe.to_lowercase();
+    exe.contains("\\target\\release\\") || exe.contains("\\target\\debug\\")
 }
 
 fn schtasks(args: &[&str]) -> Option<String> {
@@ -229,5 +279,12 @@ mod tests {
         let end = xml.find("</Command>").unwrap();
         assert_eq!(xml_unescape(&xml[start..end]).trim_matches('"'), exe);
         assert!(xml.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"));
+    }
+
+    #[test]
+    fn dev_builds_are_recognised() {
+        assert!(is_dev_build(r"C:\Users\a\Documents\betterUI\target\release\betterui.exe"));
+        assert!(is_dev_build(r"c:\code\betterui\TARGET\Debug\betterui.exe"));
+        assert!(!is_dev_build(r"C:\Users\a\Downloads\betterui.exe"));
     }
 }

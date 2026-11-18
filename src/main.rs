@@ -66,6 +66,7 @@ fn main() {
     }
 
     log::write(&format!("betterUI {} starting", env!("CARGO_PKG_VERSION")));
+    storage::remove_legacy_files();
     watchdog::start();
     log_memory_use();
     wait_for_explorer_taskbar();

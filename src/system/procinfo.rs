@@ -47,6 +47,17 @@ pub fn company_name(path: &str) -> Option<String> {
     version_string(path, "CompanyName")
 }
 
+/// The "Product version" from an exe's version info, e.g. "0.0.916".
+pub fn product_version(path: &str) -> Option<String> {
+    version_string(path, "ProductVersion")
+}
+
+/// Is version `a` (e.g. "0.0.916") newer than `b`? Compared number by number.
+pub fn version_newer(a: &str, b: &str) -> bool {
+    let parts = |v: &str| v.trim().split('.').map(|n| n.trim().parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+    parts(a) > parts(b)
+}
+
 fn version_string(path: &str, field: &str) -> Option<String> {
     unsafe {
         let wpath = HSTRING::from(path);
@@ -89,5 +100,19 @@ fn version_string(path: &str, field: &str) -> Option<String> {
         } else {
             Some(s)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::version_newer;
+
+    #[test]
+    fn versions_compare_by_number() {
+        assert!(version_newer("0.0.916", "0.0.915"));
+        assert!(version_newer("0.1.0", "0.0.999"));
+        assert!(version_newer("0.0.1000", "0.0.999"));
+        assert!(!version_newer("0.0.915", "0.0.915"));
+        assert!(!version_newer("0.0.9", "0.0.810"));
     }
 }

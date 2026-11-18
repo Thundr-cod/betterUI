@@ -67,6 +67,8 @@ impl Popup {
         self.width = w;
         self.height = h;
         let (x, y) = place(anchor, work, w, (6.0 * self.scale()).round() as i32);
+        // Something may have minimized it while closed; SW_SHOW would keep it so.
+        window::unminimize(self.hwnd);
         unsafe {
             let _ = SetWindowPos(self.hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE);
             self.gfx.resize(w as u32, h as u32);

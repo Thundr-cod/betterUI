@@ -39,7 +39,7 @@ use crate::system::apps;
 use crate::system::audio::{Audio, Flow, Level};
 use crate::system::sysinfo::{self, Memory, Network};
 use crate::ui::render::{Color, Gfx, Text, ICON_FONT, TEXT_FONT};
-use crate::ui::window::{self, Menu, MA_NOACTIVATE};
+use crate::ui::window::{self, Menu, MA_NOACTIVATE, WM_UNMINIMIZE};
 use crate::ui::{self, backdrop, R, DIM, FAINT, FG, ICON_BLUETOOTH, ICON_WIFI};
 
 // ---- Look -----------------------------------------------------------------
@@ -249,6 +249,7 @@ fn create_bar(monitor: Monitor) -> Result<Bar> {
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    window::watch_minimize(hwnd, msg, wp);
     // These must work even if the bar state is busy, so they don't touch it.
     match msg {
         WM_DESTROY => {
@@ -348,6 +349,11 @@ impl Bar {
                 Some(LRESULT(0))
             }
             WM_DPICHANGED => {
+                self.reposition();
+                Some(LRESULT(0))
+            }
+            WM_UNMINIMIZE => {
+                window::unminimize(self.hwnd);
                 self.reposition();
                 Some(LRESULT(0))
             }

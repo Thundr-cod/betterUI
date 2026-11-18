@@ -17,7 +17,7 @@ use windows::Win32::UI::Shell::{
     IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassLongPtrW, SendMessageTimeoutW, GCLP_HICON, HICON, ICON_BIG, SMTO_ABORTIFHUNG,
+    GetClassLongPtrW, IsWindow, SendMessageTimeoutW, GCLP_HICON, HICON, ICON_BIG, SMTO_ABORTIFHUNG,
     WM_GETICON,
 };
 
@@ -122,9 +122,27 @@ impl Icons {
             result.and_then(|r| r.ok())
         });
         if loaded.is_some() {
+            self.forget_closed_windows();
             self.cache.insert(key, loaded.clone());
         }
         loaded
+    }
+
+    /// Window icons are cached per window, so drop those of windows that
+    /// have closed once there are more than a few (paths stay: an app keeps
+    /// its exe).
+    fn forget_closed_windows(&mut self) {
+        if self.cache.len() < 64 {
+            return;
+        }
+        let open = |key: &str| {
+            key.rsplit_once("hwnd:")
+                .and_then(|(_, h)| h.parse::<isize>().ok())
+                .map(|h| unsafe { IsWindow(HWND(h as *mut _)).as_bool() })
+                .unwrap_or(true)
+        };
+        self.cache.retain(|k, _| !k.starts_with("window|") || open(k));
+        self.logged_misses.retain(|h| unsafe { IsWindow(HWND(*h as *mut _)).as_bool() });
     }
 
     fn load_path(&self, path: &str, size: i32) -> Result<IWICBitmapSource> {
