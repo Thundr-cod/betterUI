@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "betterui"
-version = "0.0.916"
+version = "0.0.917"
 dependencies = [
  "windows",
  "windows-core",

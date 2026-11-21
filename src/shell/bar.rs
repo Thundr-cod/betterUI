@@ -61,6 +61,8 @@ const TIMER_TASKBAR: usize = 2; // keep the native taskbar hidden
 const TIMER_REBUILD: usize = 3; // monitors changed (debounced)
 const TIMER_POLL: usize = 4; // 100 ms: auto-hide (mouse at top edge, windows covering)
 const TIMER_ANIM: usize = 5; // ~60 fps while sliding in or out
+/// How long after an Explorer restart to keep checking the reserved strip.
+const STRIP_CHECK_SECS: u64 = 30;
 const MENU_QUIT: usize = 1;
 const MENU_BLUR: usize = 2;
 const MENU_AUTOSTART: usize = 3;
@@ -120,6 +122,11 @@ struct Bar {
     height: i32,
     taskbar_created: u32,
     ticks: u64,
+    /// Check the reserved strip on each tick until `ticks` reaches this
+    /// (set to 30 s after each Explorer restart).
+    strip_check_until: u64,
+    /// Set while the bar's reserved strip is missing, so it's logged once.
+    strip_lost: bool,
     memory: Memory,
     network: Network,
     clock: String,
@@ -296,6 +303,8 @@ impl Bar {
             height: 0,
             taskbar_created: unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) },
             ticks: 0,
+            strip_check_until: 0,
+            strip_lost: false,
             memory: sysinfo::memory(),
             network: sysinfo::network(),
             clock: clock_text(),
@@ -421,12 +430,15 @@ impl Bar {
             m if m != 0 && m == self.taskbar_created => {
                 // Explorer restarted: it re-created the taskbar and forgot us.
                 if self.monitor.primary {
+                    log::write("Explorer restarted (TaskbarCreated)");
                     taskbar::hide();
                 }
                 if self.config.bar_mode == DockMode::Always {
                     appbar::register(self.hwnd, WM_APPBAR);
                 }
                 self.reposition();
+                // Explorer can reset the work area a few seconds later.
+                self.strip_check_until = self.ticks + STRIP_CHECK_SECS;
                 Some(LRESULT(0))
             }
             _ => None,
@@ -440,6 +452,9 @@ impl Bar {
         if clock != self.clock {
             self.clock = clock;
             changed = true;
+        }
+        if self.ticks < self.strip_check_until {
+            self.keep_strip_reserved();
         }
         if self.ticks.is_multiple_of(2) {
             let (memory, network) = shared_readouts();
@@ -457,6 +472,28 @@ impl Bar {
         if changed {
             window::invalidate(self.hwnd);
         }
+    }
+
+    /// With bar_mode always, put the bar's reserved strip back if Windows lost
+    /// it. Runs each second for STRIP_CHECK_SECS after an Explorer restart:
+    /// Explorer resets the work area a few seconds after TaskbarCreated (after
+    /// we re-registered), which would let maximized windows cover the bar.
+    fn keep_strip_reserved(&mut self) {
+        if self.config.bar_mode != DockMode::Always {
+            return;
+        }
+        let hmon = unsafe { MonitorFromRect(&self.monitor.rect, MONITOR_DEFAULTTONEAREST) };
+        let Some(m) = window::monitor_info(hmon) else { return };
+        if m.work.top > m.rect.top {
+            self.strip_lost = false;
+            return;
+        }
+        if !self.strip_lost {
+            self.strip_lost = true;
+            log::write("the bar's screen space was lost; reserving it again");
+        }
+        appbar::register(self.hwnd, WM_APPBAR);
+        self.reposition();
     }
 
     /// Re-read the output volume. Returns true if the icon needs redrawing
